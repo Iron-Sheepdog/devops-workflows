@@ -1,0 +1,52 @@
+name: Gemini Code Review (Reusable)
+
+# Reusable workflow: call this from another repo/workflow via `uses:` and
+# `jobs.<id>.with`/`secrets`. It runs an automated senior-developer-grade
+# code review on the pull request using Google's Gemini model.
+on:
+  workflow_call:
+    secrets:
+      GEMINI_API_KEY:
+        description: API key for the Gemini API, used to authenticate the review action.
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  gemini-review:
+    name: Gemini Code Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gemini Code Review
+        uses: sshnaidm/gemini-code-review-action@v2
+        with:
+          gemini-key: ${{ secrets.GEMINI_API_KEY }}
+          model: gemini-2.5-pro
+          prompt: |
+            You are a strict, highly experienced senior software engineer
+            performing a rigorous code review on the pull request diff below.
+
+            Hold the code to a high production-quality bar. Review for:
+            - Correctness: logic errors, edge cases, race conditions, off-by-one
+              errors, and incorrect assumptions.
+            - Security: injection, auth/authorization flaws, secret leakage,
+              unsafe input handling, and insecure dependencies.
+            - Reliability: error handling, resource leaks, and failure modes.
+            - Performance: unnecessary work, N+1 queries, and inefficient
+              data structures or algorithms.
+            - Maintainability: readability, naming, duplication, dead code,
+              and adherence to established conventions.
+            - Testing: missing or inadequate test coverage for the change.
+
+            Be direct and uncompromising. Call out every real issue, ordered by
+            severity (Blocker > High > Medium > Low/Nit). For each finding, cite
+            the specific file and line, explain why it matters, and propose a
+            concrete fix. Do not praise trivial code or pad the review. If the
+            change is genuinely solid, say so briefly and approve.
