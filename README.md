@@ -8,7 +8,7 @@ Instead of duplicating CI/CD logic in every application repository, common autom
 
 | Workflow | File | Description |
 |---|---|---|
-| **Gemini Code Review** | [`.github/workflows/gemini-review.yml`](.github/workflows/gemini-review.yml) | Runs an automated, senior-engineer-grade code review on pull requests using Google's `gemini-2.5-pro` model. Findings are posted as PR comments, ordered by severity (Blocker → Nit). |
+| **Gemini Code Review** | [`.github/workflows/gemini-review.yml`](.github/workflows/gemini-review.yml) | Runs an automated code review on pull requests using the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action and the [code-review extension](https://github.com/gemini-cli-extensions/code-review). Findings are posted as inline PR review comments plus a summary, with severity levels (Critical → Low). |
 
 ## ✅ Prerequisites
 
@@ -25,7 +25,7 @@ In the repository that will call this workflow:
    |---|---|
    | `GEMINI_API_KEY` | Your Gemini API key |
 
-The calling workflow must also grant `pull-requests: write` permission so the review can be posted as a comment.
+The calling workflow must also grant `pull-requests: write` and `issues: write` permissions so the review can be posted to the pull request.
 
 ## 🚀 Usage
 
@@ -40,6 +40,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 jobs:
@@ -51,12 +52,31 @@ jobs:
 
 That's it — every pull request will now receive an automated Gemini code review.
 
+### Optional inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `additional_context` | _(empty)_ | Extra instructions for the review (e.g. `"Focus on security vulnerabilities"`). |
+| `gemini_model` | `gemini-2.5-pro` | Gemini model used for the review. |
+
+Pass them via `with:` in the calling job:
+
+```yaml
+jobs:
+  gemini-review:
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@main
+    with:
+      additional_context: Focus on Firestore security rules and query efficiency.
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+```
+
 ### How it works
 
 1. A pull request is opened or updated in your repository.
 2. Your workflow calls the reusable `gemini-review.yml` workflow in this repo, explicitly passing your repository's `GEMINI_API_KEY` secret.
-3. The workflow checks out the code and sends the PR diff to Gemini for a rigorous review covering correctness, security, reliability, performance, maintainability, and testing.
-4. The review is posted back to the pull request as a comment.
+3. The workflow checks out the code and runs the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action with the [`code-review` extension](https://github.com/gemini-cli-extensions/code-review) (`/pr-code-review`), which reads the PR via the GitHub MCP server and reviews security, performance, reliability, maintainability, and functionality.
+4. Findings are posted back to the pull request as inline review comments plus a summary, with severity levels (Critical → Low).
 
 ## 🤝 Contributing
 

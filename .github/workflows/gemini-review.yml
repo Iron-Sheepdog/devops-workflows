@@ -1,52 +1,114 @@
 name: Gemini Code Review (Reusable)
 
 # Reusable workflow: call this from another repo/workflow via `uses:` and
-# `jobs.<id>.with`/`secrets`. It runs an automated senior-developer-grade
-# code review on the pull request using Google's Gemini model.
+# `jobs.<id>.secrets`. It runs an automated code review on the pull request
+# using the official google-github-actions/run-gemini-cli action and the
+# Gemini CLI code-review extension, posting inline review comments.
+#
+# Adapted from the official example:
+# https://github.com/google-github-actions/run-gemini-cli/tree/main/examples/workflows/pr-review
 on:
   workflow_call:
+    inputs:
+      additional_context:
+        type: string
+        description: Any additional instructions or context for the review.
+        required: false
+      gemini_model:
+        type: string
+        description: Gemini model to use for the review.
+        required: false
+        default: gemini-2.5-pro
     secrets:
       GEMINI_API_KEY:
         description: API key for the Gemini API, used to authenticate the review action.
         required: true
 
-permissions:
-  contents: read
-  pull-requests: write
+concurrency:
+  group: '${{ github.workflow }}-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}'
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   gemini-review:
     name: Gemini Code Review
     runs-on: ubuntu-latest
+    timeout-minutes: 7
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # ratchet:actions/checkout@v6
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Gemini Code Review
-        uses: sshnaidm/gemini-code-review-action@v2
+      - name: Prepare prompt context
+        run: |-
+          mkdir -p .gemini
+          jq -n \
+            --arg repo "${REPOSITORY}" \
+            --arg pr "${PULL_REQUEST_NUMBER}" \
+            --arg context "${ADDITIONAL_CONTEXT}" \
+            '{repository: $repo, pull_request_number: $pr, additional_context: $context}' > .gemini/context.json
+        env:
+          REPOSITORY: '${{ github.repository }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
+
+      - name: Run Gemini pull request review
+        uses: google-github-actions/run-gemini-cli@v0 # ratchet:exclude
+        id: gemini_pr_review
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          GEMINI_API_KEY: '${{ secrets.GEMINI_API_KEY }}'
         with:
-          gemini-key: ${{ secrets.GEMINI_API_KEY }}
-          model: gemini-2.5-pro
-          prompt: |
-            You are a strict, highly experienced senior software engineer
-            performing a rigorous code review on the pull request diff below.
-
-            Hold the code to a high production-quality bar. Review for:
-            - Correctness: logic errors, edge cases, race conditions, off-by-one
-              errors, and incorrect assumptions.
-            - Security: injection, auth/authorization flaws, secret leakage,
-              unsafe input handling, and insecure dependencies.
-            - Reliability: error handling, resource leaks, and failure modes.
-            - Performance: unnecessary work, N+1 queries, and inefficient
-              data structures or algorithms.
-            - Maintainability: readability, naming, duplication, dead code,
-              and adherence to established conventions.
-            - Testing: missing or inadequate test coverage for the change.
-
-            Be direct and uncompromising. Call out every real issue, ordered by
-            severity (Blocker > High > Medium > Low/Nit). For each finding, cite
-            the specific file and line, explain why it matters, and propose a
-            concrete fix. Do not praise trivial code or pad the review. If the
-            change is genuinely solid, say so briefly and approve.
+          gemini_api_key: '${{ secrets.GEMINI_API_KEY }}'
+          gemini_model: '${{ inputs.gemini_model }}'
+          workflow_name: gemini-review
+          github_pr_number: '${{ github.event.pull_request.number }}'
+          settings: |-
+            {
+              "model": {
+                "maxSessionTurns": 25
+              },
+              "telemetry": {
+                "enabled": true,
+                "target": "local",
+                "outfile": ".gemini/telemetry.log"
+              },
+              "mcpServers": {
+                "github": {
+                  "command": "docker",
+                  "args": [
+                    "run",
+                    "-i",
+                    "--rm",
+                    "-e",
+                    "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "ghcr.io/github/github-mcp-server:v0.27.0"
+                  ],
+                  "includeTools": [
+                    "add_comment_to_pending_review",
+                    "pull_request_read",
+                    "pull_request_review_write"
+                  ],
+                  "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+                  }
+                }
+              },
+              "tools": {
+                "core": []
+              }
+            }
+          extensions: |
+            [
+              "https://github.com/gemini-cli-extensions/code-review"
+            ]
+          prompt: '/pr-code-review'
