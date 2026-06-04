@@ -118,4 +118,4 @@ jobs:
             [
               "https://github.com/gemini-cli-extensions/code-review"
             ]
-          prompt: '/pr-code-review'
+          prompt: '/pr-code-review https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number || github.event.issue.number }}'
