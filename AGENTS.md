@@ -19,7 +19,7 @@ duplicating CI/CD logic locally.
 
 | File | Purpose |
 |---|---|
-| `.github/workflows/gemini-review.yml` | Reusable PR code review using Google's `gemini-2.5-pro` (via `sshnaidm/gemini-code-review-action@v2`). Requires the caller to pass a `GEMINI_API_KEY` secret. |
+| `.github/workflows/gemini-review.yml` | Reusable PR code review using Google's `gemini-3.5-flash` (via `google-github-actions/run-gemini-cli@v0`). Requires the caller to pass a `GEMINI_API_KEY` secret. |
 
 ## Conventions
 

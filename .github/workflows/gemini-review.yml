@@ -18,7 +18,7 @@ on:
         type: string
         description: Gemini model to use for the review.
         required: false
-        default: gemini-2.5-pro
+        default: gemini-3.5-flash
       upload_artifacts:
         type: boolean
         description: Upload the Gemini CLI's stdout/stderr/telemetry logs as a workflow artifact for diagnostics.
