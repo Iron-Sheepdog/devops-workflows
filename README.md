@@ -57,7 +57,7 @@ That's it — every pull request will now receive an automated Gemini code revie
 | Input | Default | Description |
 |---|---|---|
 | `additional_context` | _(empty)_ | Extra instructions for the review (e.g. `"Focus on security vulnerabilities"`). |
-| `gemini_model` | `gemini-2.5-pro` | Gemini model used for the review. |
+| `gemini_model` | `gemini-3.5-flash` | Gemini model used for the review. |
 | `upload_artifacts` | `false` | Upload the Gemini CLI's `stdout.log`, `stderr.log`, and `telemetry.log` as a workflow artifact (`gemini-output`) for diagnostics. |
 | `gemini_debug` | `false` | Enable Gemini CLI debug logging and stream responses to the job log. May expose sensitive content; turn on only when diagnosing issues. |
 
