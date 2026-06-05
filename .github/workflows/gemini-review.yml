@@ -29,6 +29,11 @@ on:
         description: Enable Gemini CLI debug logging and stream responses to the job log. May expose sensitive content; use only for diagnosing issues.
         required: false
         default: false
+      max_session_turns:
+        type: number
+        description: Maximum number of Gemini CLI session turns before the review aborts with FatalTurnLimitedError. Raise when reviews routinely exhaust the default cap (e.g. larger diffs, retried MCP tool calls).
+        required: false
+        default: 25
     secrets:
       GEMINI_API_KEY:
         description: API key for the Gemini API, used to authenticate the review action.
@@ -90,7 +95,7 @@ jobs:
           settings: |-
             {
               "model": {
-                "maxSessionTurns": 25
+                "maxSessionTurns": ${{ inputs.max_session_turns }}
               },
               "telemetry": {
                 "enabled": true,
