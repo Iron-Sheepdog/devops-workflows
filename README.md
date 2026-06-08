@@ -45,7 +45,7 @@ permissions:
 
 jobs:
   gemini-review:
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@main
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
     secrets:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 ```
@@ -66,7 +66,7 @@ Pass them via `with:` in the calling job:
 ```yaml
 jobs:
   gemini-review:
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@main
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
     with:
       additional_context: Focus on Firestore security rules and query efficiency.
     secrets:
@@ -80,8 +80,23 @@ jobs:
 3. The workflow checks out the code and runs the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action with the [`code-review` extension](https://github.com/gemini-cli-extensions/code-review) (`/pr-code-review`), which reads the PR via the GitHub MCP server and reviews security, performance, reliability, maintainability, and functionality.
 4. Findings are posted back to the pull request as inline review comments plus a summary, with severity levels (Critical → Low).
 
+## 🏷️ Versioning
+
+This repo follows [Semantic Versioning](https://semver.org/). Each release is cut as an immutable tag (`v1.0.0`, `v1.1.0`, …), and a **moving major tag** (`v1`) always points at the latest `v1.x.x`.
+
+| Pin | Behaviour | Use when |
+|---|---|---|
+| `@v1` | Latest non-breaking `v1.x.x` (recommended) | Normal usage — get fixes & features, never a breaking change |
+| `@v1.2.3` | Exact release, never moves | You need a fully reproducible pin |
+| `@<sha>` | Exact commit | Maximum strictness / security |
+| `@main` | Bleeding edge | Testing unreleased changes only — **not** for production callers |
+
+Breaking changes ship under a new major tag (`v2`); the old major (`v1`) keeps working so consumers migrate on their own schedule.
+
+Releases are automated via [release-please](https://github.com/googleapis/release-please): merging Conventional Commits to `main` opens a release PR; merging that PR cuts the tag, updates `CHANGELOG.md`, and re-points the `v1` alias.
+
 ## 🤝 Contributing
 
-- Pin callers to `@main` for the latest version, or to a tag/SHA for stability.
-- Changes to workflows in this repository affect **all** consuming repositories — review carefully before merging.
-- Follow [Conventional Commits](https://www.conventionalcommits.org/) (e.g. `ci(gemini): adjust review prompt`).
+- Changes to workflows in this repository affect **all** consuming repositories pinned to that major version — review carefully before merging.
+- Follow [Conventional Commits](https://www.conventionalcommits.org/) (e.g. `ci(gemini): adjust review prompt`). `feat:` → minor bump, `fix:` → patch bump, `feat!:`/`BREAKING CHANGE:` → major bump.
+- Let release-please cut releases — don't create tags by hand.
