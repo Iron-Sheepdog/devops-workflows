@@ -1,0 +1,132 @@
+name: Deterministic Security Scans (Reusable)
+
+# Reusable workflow: call this from another repo/workflow via `uses:`. It runs two
+# deterministic security baselines in parallel against the caller's checked-out code:
+#
+#   * Gitleaks — scans the FULL git history for hardcoded secrets (API keys, tokens).
+#   * Trivy    — scans the filesystem (dependency manifests, etc.) for known CVEs.
+#
+# These complement the non-deterministic Gemini review (gemini-review.yml): hard,
+# repeatable checks for problems LLMs are unreliable at (exact secret/CVE matching).
+#
+# Notes:
+#   * We run the Gitleaks *CLI binary* (MIT, free) rather than gitleaks/gitleaks-action,
+#     because that action requires a paid license to scan repos owned by an organization.
+#   * The Trivy action is pinned to a full commit SHA — trivy-action has been the target
+#     of supply-chain attacks via mutable tags, so `@master`/`@vX` are unsafe.
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        type: string
+        description: Node version used for environment context (informational).
+        required: false
+        default: '22.x'
+      severity:
+        type: string
+        description: Comma-separated Trivy severities to report (e.g. "CRITICAL,HIGH").
+        required: false
+        default: 'CRITICAL,HIGH'
+      trivy_exit_code:
+        type: string
+        description: 'Exit code when Trivy finds vulnerabilities. "0" = report-only (default), "1" = fail the build.'
+        required: false
+        default: '0'
+      gitleaks_exit_code:
+        type: string
+        description: 'Exit code when Gitleaks finds secrets. "1" = fail the build (default), "0" = report-only.'
+        required: false
+        default: '1'
+      scan_ref:
+        type: string
+        description: Filesystem path Trivy scans for vulnerabilities.
+        required: false
+        default: '.'
+      run_gitleaks:
+        type: boolean
+        description: Run the Gitleaks secret-detection job.
+        required: false
+        default: true
+      run_trivy:
+        type: boolean
+        description: Run the Trivy dependency CVE-scan job.
+        required: false
+        default: true
+
+concurrency:
+  group: '${{ github.workflow }}-security-${{ github.event.pull_request.number || github.ref }}'
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GITLEAKS_VERSION: '8.30.1'
+
+jobs:
+  gitleaks:
+    name: Secret Detection (Gitleaks)
+    if: ${{ inputs.run_gitleaks }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # ratchet:actions/checkout@v6
+        with:
+          fetch-depth: 0 # Gitleaks needs the full history to detect previously committed secrets.
+          persist-credentials: false
+
+      - name: Install Gitleaks CLI
+        env:
+          VERSION: '${{ env.GITLEAKS_VERSION }}'
+        run: |-
+          set -euo pipefail
+          tarball="gitleaks_${VERSION}_linux_x64.tar.gz"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}"
+          curl -fsSL -o "${tarball}" "${base}/${tarball}"
+          curl -fsSL -o checksums.txt "${base}/gitleaks_${VERSION}_checksums.txt"
+          # Verify the download against the published checksum before trusting the binary.
+          grep " ${tarball}\$" checksums.txt | sha256sum -c -
+          tar -xzf "${tarball}" gitleaks
+          ./gitleaks version
+
+      - name: Scan git history for secrets
+        env:
+          EXIT_CODE: '${{ inputs.gitleaks_exit_code }}'
+        run: |-
+          set -euo pipefail
+          ./gitleaks git . \
+            --redact \
+            --verbose \
+            --no-banner \
+            --exit-code "${EXIT_CODE}"
+
+  trivy:
+    name: Dependency CVE Scan (Trivy)
+    if: ${{ inputs.run_trivy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # ratchet:actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # ratchet:exclude (v0.36.0 — pinned by SHA; trivy-action has had compromised tags)
+        env:
+          # Trivy pulls its vulnerability DB from GHCR; the token avoids anonymous rate limits.
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          TRIVY_NODE_VERSION: '${{ inputs.node_version }}'
+        with:
+          scan-type: fs
+          scan-ref: '${{ inputs.scan_ref }}'
+          format: table
+          severity: '${{ inputs.severity }}'
+          exit-code: '${{ inputs.trivy_exit_code }}'
+          ignore-unfixed: true # Don't fail on CVEs that have no fixed version available yet.

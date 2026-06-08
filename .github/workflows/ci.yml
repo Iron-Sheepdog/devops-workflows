@@ -1,0 +1,15 @@
+name: CI
+
+# Dogfoods our own reusable security scans against this repository on every PR,
+# and serves as a live self-test of security-scans.yml. Uses the local copy on
+# the PR branch (`./`) so changes are validated before they're released.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    uses: ./.github/workflows/security-scans.yml
