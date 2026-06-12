@@ -53,6 +53,22 @@ jobs:
 
 That's it — every pull request will now receive an automated Gemini code review.
 
+### Excluding automated PRs
+
+If your repository uses tools like [release-please](https://github.com/googleapis/release-please) or Dependabot, you likely want to skip the review on those machine-generated PRs. Add an `if` condition to the job:
+
+```yaml
+jobs:
+  gemini-review:
+    # Skip release-please version-bump PRs
+    if: "!startsWith(github.head_ref, 'release-please--')"
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+```
+
+For Dependabot, use `github.actor != 'dependabot[bot]'`. Both conditions can be combined with `&&`.
+
 ### Optional inputs
 
 | Input | Default | Description |
@@ -80,6 +96,7 @@ jobs:
 2. Your workflow calls the reusable `gemini-review.yml` workflow in this repo, explicitly passing your repository's `GEMINI_API_KEY` secret.
 3. The workflow checks out the code and runs the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action with the [`code-review` extension](https://github.com/gemini-cli-extensions/code-review) (`/pr-code-review`), which reads the PR via the GitHub MCP server and reviews security, performance, reliability, maintainability, and functionality.
 4. Findings are posted back to the pull request as inline review comments plus a summary, with severity levels (Critical → Low).
+5. When a pull request has no issues worth raising as inline comments, the review summary ends with a final `LGTM :+1:` line as a sign-off. This is steered via the review prompt (the `code-review` extension always posts a `COMMENT`-type review, so this is a tidy comment rather than a GitHub "Approved" status), and is layered on top of any `additional_context` you pass.
 
 ## 🛡️ Usage — Deterministic Security Scans
 
