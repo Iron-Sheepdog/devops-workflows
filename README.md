@@ -52,6 +52,22 @@ jobs:
 
 That's it — every pull request will now receive an automated Gemini code review.
 
+### Excluding automated PRs
+
+If your repository uses tools like [release-please](https://github.com/googleapis/release-please) or Dependabot, you likely want to skip the review on those machine-generated PRs. Add an `if` condition to the job:
+
+```yaml
+jobs:
+  gemini-review:
+    # Skip release-please version-bump PRs
+    if: "!startsWith(github.head_ref, 'release-please--')"
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+```
+
+For Dependabot, use `github.actor != 'dependabot[bot]'`. Both conditions can be combined with `&&`.
+
 ### Optional inputs
 
 | Input | Default | Description |
