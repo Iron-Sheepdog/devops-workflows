@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/Iron-Sheepdog/devops-workflows/compare/v1.1.0...v1.2.0) (2026-06-12)
+
+
+### Features
+
+* **ci:** add deterministic security scans (Gitleaks + Trivy) ([#11](https://github.com/Iron-Sheepdog/devops-workflows/issues/11)) ([3d120c3](https://github.com/Iron-Sheepdog/devops-workflows/commit/3d120c38689702c00526bf2b037e2a8da1e2cd31)), closes [#8](https://github.com/Iron-Sheepdog/devops-workflows/issues/8)
+
 ## [1.1.0](https://github.com/Iron-Sheepdog/devops-workflows/compare/v1.0.0...v1.1.0) (2026-06-10)
 
 
