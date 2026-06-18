@@ -33,7 +33,7 @@ on:
         type: number
         description: Maximum number of Gemini CLI session turns before the review aborts with FatalTurnLimitedError. Raise when reviews routinely exhaust the default cap (e.g. larger diffs, retried MCP tool calls).
         required: false
-        default: 25
+        default: 50
     secrets:
       GEMINI_API_KEY:
         description: API key for the Gemini API, used to authenticate the review action.
