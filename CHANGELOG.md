@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/Iron-Sheepdog/devops-workflows/compare/v1.2.0...v1.3.0) (2026-06-18)
+
+
+### Features
+
+* **gemini-review:** increase max_session_turns default from 25 to 50 ([#16](https://github.com/Iron-Sheepdog/devops-workflows/issues/16)) ([6a85ab2](https://github.com/Iron-Sheepdog/devops-workflows/commit/6a85ab2a62aa5a5f367b6728b473280bc83fce7e))
+
 ## [1.2.0](https://github.com/Iron-Sheepdog/devops-workflows/compare/v1.1.0...v1.2.0) (2026-06-12)
 
 
