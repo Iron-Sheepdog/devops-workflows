@@ -1,0 +1,81 @@
+# Reusable: terraform plan for pull requests. Authenticates to GCP keylessly via
+# Workload Identity Federation (no stored key), runs `terraform plan`, and
+# optionally comments the plan on the PR. (Drift detection lives in
+# terraform-drift.yml.)
+# DRAFT — review and test before relying on it.
+name: terraform-plan
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: Directory to run Terraform in (e.g. envs/dev)
+        type: string
+        required: true
+      wif_provider:
+        description: Workload Identity provider resource name
+        type: string
+        required: true
+      service_account:
+        description: Service account email to impersonate
+        type: string
+        required: true
+      terraform_version:
+        type: string
+        default: "1.15.6"
+      comment_on_pr:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write        # required for WIF OIDC token
+  pull-requests: write   # required to comment the plan
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (keyless)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ inputs.wif_provider }}
+          service_account: ${{ inputs.service_account }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Init
+        run: terraform init -input=false
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode > plan.txt 2>&1
+          code=$?
+          cat plan.txt
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          # detailed-exitcode: 0=no changes, 2=changes, 1=error
+          [ "$code" = "1" ] && exit 1 || exit 0
+
+      - name: Comment plan on PR
+        if: ${{ inputs.comment_on_pr && github.event_name == 'pull_request' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = fs.readFileSync('${{ inputs.working_directory }}/plan.txt', 'utf8');
+            if (body.length > 60000) body = body.slice(0, 60000) + '\n...(truncated)...';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '#### `terraform plan` — `${{ inputs.working_directory }}`\n```\n' + body + '\n```'
+            });

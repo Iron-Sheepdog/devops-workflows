@@ -1,0 +1,53 @@
+# Reusable: terraform apply. Keyless GCP auth via Workload Identity Federation.
+# Invoked by a caller that gates it (manual trigger on free plan; Environment
+# approval on Team). Re-plans and applies; see note below.
+# DRAFT — review and test before relying on it.
+name: terraform-apply
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        type: string
+        required: true
+      wif_provider:
+        type: string
+        required: true
+      service_account:
+        type: string
+        required: true
+      terraform_version:
+        type: string
+        default: "1.15.6"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (keyless)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ inputs.wif_provider }}
+          service_account: ${{ inputs.service_account }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Init
+        run: terraform init -input=false
+
+      # NOTE: this re-plans and applies. A later refinement is to apply the exact
+      # plan file reviewed on the PR (saved as an artifact) for a stronger
+      # "what ran is what was approved" guarantee.
+      - name: Apply
+        run: terraform apply -input=false -auto-approve -lock-timeout=120s
