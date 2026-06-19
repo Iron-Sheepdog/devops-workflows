@@ -1,0 +1,135 @@
+# Reusable: state-aware Terraform drift detection.
+#
+# Runs `terraform plan` against live infrastructure and notifies ONLY when the
+# drift state changes — at most two Slack messages per episode:
+#   - "detected"  when drift first appears (and a tracking GitHub issue is opened)
+#   - "resolved"  when a later run comes back clean (and the issue is closed)
+# While drift persists, runs stay silent (the open issue is the dedup state).
+# Every message is tagged with the environment. Reports only; changes nothing.
+# DRAFT — review and test before relying on it.
+name: terraform-drift
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        type: string
+        required: true
+      environment:
+        description: Environment label used in messages and the issue title (e.g. dev)
+        type: string
+        required: true
+      wif_provider:
+        type: string
+        required: true
+      service_account:
+        type: string
+        required: true
+      terraform_version:
+        type: string
+        default: "1.15.6"
+    secrets:
+      slack_webhook_url:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write   # WIF
+  issues: write     # open/close the drift tracking issue
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (keyless)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ inputs.wif_provider }}
+          service_account: ${{ inputs.service_account }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Init
+        run: terraform init -input=false
+
+      - name: Plan (detect drift)
+        id: plan
+        run: |
+          set +e
+          terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode > plan.txt 2>&1
+          code=$?
+          cat plan.txt
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"   # 0=clean, 2=drift, 1=error
+          exit 0
+
+      - name: Reconcile tracking issue and notify on change only
+        uses: actions/github-script@v7
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          WORKDIR: ${{ inputs.working_directory }}
+          EXITCODE: ${{ steps.plan.outputs.exitcode }}
+        with:
+          script: |
+            const fs = require('fs');
+            const env = process.env.ENVIRONMENT;
+            const code = process.env.EXITCODE;
+            const workdir = process.env.WORKDIR;
+            const webhook = process.env.SLACK_WEBHOOK_URL;
+            const title = `Terraform drift: ${env}`;
+            const { owner, repo } = context.repo;
+
+            async function slack(text) {
+              if (!webhook) return;
+              await fetch(webhook, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text }),
+              });
+            }
+
+            // On a hard error, fail the run (visible in Actions) but do NOT spam
+            // Slack — a persistent error would otherwise ping every hour.
+            if (code === '1') {
+              core.setFailed(`terraform plan errored for ${env} — see logs.`);
+              return;
+            }
+
+            // Find an existing open tracking issue for this environment.
+            const open = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: 'drift', per_page: 100,
+            });
+            const existing = open.data.find(i => i.title === title);
+
+            if (code === '2') {
+              // Drift present. Notify + open an issue only if not already tracked.
+              if (!existing) {
+                let plan = fs.readFileSync(`${workdir}/plan.txt`, 'utf8');
+                if (plan.length > 55000) plan = plan.slice(0, 55000) + '\n...(truncated)...';
+                const issue = await github.rest.issues.create({
+                  owner, repo, title, labels: ['drift'],
+                  body: `Drift detected in **\`${env}\`** (\`${workdir}\`).\n\n\`\`\`\n${plan}\n\`\`\`\n\nResolve by either updating the Terraform to match (accept) or \`terraform apply\` to revert (reject). This issue closes automatically when the next scheduled run is clean.`,
+                });
+                await slack(`:red_circle: *Terraform drift detected* — env \`${env}\`\n${issue.data.html_url}`);
+              }
+              // else: already tracked → stay silent (dedup).
+            } else if (code === '0') {
+              // Clean. If we were tracking drift, close it and announce resolution.
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: existing.number,
+                  body: 'Resolved — `terraform plan` is clean again. Closing.',
+                });
+                await github.rest.issues.update({
+                  owner, repo, issue_number: existing.number, state: 'closed',
+                });
+                await slack(`:white_check_mark: *Terraform drift resolved* — env \`${env}\``);
+              }
+            }
