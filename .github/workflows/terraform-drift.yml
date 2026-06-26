@@ -55,6 +55,11 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ inputs.terraform_version }}
+          # MUST be false: the default wrapper swallows terraform's real exit
+          # code, so `-detailed-exitcode` (2 = drift) came back as 0 and drift
+          # detection silently did nothing. With the wrapper off, $? is the true
+          # terraform exit code (0 clean / 1 error / 2 drift).
+          terraform_wrapper: false
 
       - name: Init
         run: terraform init -input=false
@@ -66,7 +71,8 @@ jobs:
           terraform plan -input=false -no-color -lock-timeout=120s -detailed-exitcode > plan.txt 2>&1
           code=$?
           cat plan.txt
-          echo "exitcode=$code" >> "$GITHUB_OUTPUT"   # 0=clean, 2=drift, 1=error
+          echo "::notice::terraform plan -detailed-exitcode = $code (0=clean, 2=drift, 1=error)"
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Reconcile tracking issue and notify on change only
@@ -95,10 +101,11 @@ jobs:
               });
             }
 
-            // On a hard error, fail the run (visible in Actions) but do NOT spam
-            // Slack — a persistent error would otherwise ping every hour.
-            if (code === '1') {
-              core.setFailed(`terraform plan errored for ${env} — see logs.`);
+            // Fail loudly on a hard error OR an unexpected code (so the job can
+            // never silently do nothing again). Don't Slack-spam on errors — a
+            // persistent error would otherwise ping every hour.
+            if (code !== '0' && code !== '2') {
+              core.setFailed(`drift check for ${env}: unexpected plan exit code "${code}" (expected 0 or 2) — see logs.`);
               return;
             }
 
