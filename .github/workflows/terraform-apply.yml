@@ -1,6 +1,6 @@
 # Reusable: terraform apply. Keyless GCP auth via Workload Identity Federation.
 # Invoked by a caller that gates it (manual trigger on free plan; Environment
-# approval on Team). Re-plans and applies; see note below.
+# approval on Team). Applies the exact plan it just produced.
 # DRAFT — review and test before relying on it.
 name: terraform-apply
 
@@ -24,6 +24,13 @@ permissions:
   contents: read
   id-token: write
 
+# Serialize applies for a given working directory: a second apply queues behind
+# the first instead of racing it (complements the GCS state lock, which would
+# otherwise just error the second run). Never interrupt an in-flight apply.
+concurrency:
+  group: terraform-apply-${{ inputs.working_directory }}
+  cancel-in-progress: false
+
 jobs:
   apply:
     runs-on: ubuntu-latest
@@ -42,12 +49,19 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
 
       - name: Init
         run: terraform init -input=false
 
-      # NOTE: this re-plans and applies. A later refinement is to apply the exact
-      # plan file reviewed on the PR (saved as an artifact) for a stronger
-      # "what ran is what was approved" guarantee.
-      - name: Apply
-        run: terraform apply -input=false -auto-approve -lock-timeout=120s
+      # Plan to a saved file, then apply EXACTLY that file. Two safety properties:
+      #   1. What applies is what was just planned (no separate re-plan that could
+      #      diverge) — the plan is printed here for the run's audit record.
+      #   2. `apply <file>` refuses a stale plan: if the state changed between
+      #      these two steps, Terraform errors instead of applying something
+      #      computed against an older state.
+      - name: Plan
+        run: terraform plan -input=false -lock-timeout=120s -out=tfplan
+
+      - name: Apply (the saved plan)
+        run: terraform apply -input=false -lock-timeout=120s tfplan
