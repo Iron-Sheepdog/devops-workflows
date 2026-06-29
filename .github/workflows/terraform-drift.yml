@@ -161,7 +161,12 @@ jobs:
                 const issue = await github.rest.issues.create({
                   owner, repo, title, labels: ['drift'], body: issueBody(env, workdir, plan),
                 });
-                await slack(`:red_circle: *Terraform drift detected* — env \`${env}\` (${plan.changed.length} resource(s))\n${issue.data.html_url}`);
+                await slack([
+                  `:red_circle: *Infrastructure drift detected — \`${env}\`*`,
+                  `Live GCP no longer matches the Terraform code: ${plan.changed.length} resource(s) were changed outside of Terraform (e.g. in the Cloud console).`,
+                  `Next step: open the tracking issue and either *accept* the change (update the code in a PR) or *reject* it (run the apply workflow to revert). Nothing was changed automatically.`,
+                  issue.data.html_url,
+                ].join('\n'));
               } else {
                 // An issue is already open. Alert again ONLY if the drift set
                 // CHANGED — otherwise stay silent (true dedup on identical drift).
@@ -174,7 +179,11 @@ jobs:
                     owner, repo, issue_number: existing.number,
                     body: `Drift set changed (fingerprint \`${prevFp || 'none'}\` → \`${plan.fp}\`). Now ${plan.changed.length} changed resource(s):\n${plan.changed.map(c => `- \`${c}\``).join('\n')}`,
                   });
-                  await slack(`:large_orange_circle: *Terraform drift changed* — env \`${env}\` (now ${plan.changed.length} resource(s))\n${existing.html_url}`);
+                  await slack([
+                    `:large_orange_circle: *Infrastructure drift changed — \`${env}\`*`,
+                    `The set of resources that differ from the Terraform code has changed — a new or different out-of-band change was detected (now ${plan.changed.length} resource(s)). The existing tracking issue has been updated with details.`,
+                    existing.html_url,
+                  ].join('\n'));
                 }
                 // else: same drift still present → silent.
               }
@@ -188,6 +197,9 @@ jobs:
                 await github.rest.issues.update({
                   owner, repo, issue_number: existing.number, state: 'closed',
                 });
-                await slack(`:white_check_mark: *Terraform drift resolved* — env \`${env}\``);
+                await slack([
+                  `:white_check_mark: *Infrastructure drift resolved — \`${env}\`*`,
+                  `Live GCP matches the Terraform code again — the difference was reverted or accepted into code. The tracking issue has been closed automatically.`,
+                ].join('\n'));
               }
             }
