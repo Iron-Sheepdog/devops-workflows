@@ -50,6 +50,9 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ inputs.terraform_version }}
+          # Off so $? is terraform's true exit code (the default wrapper masks it,
+          # which would let a real plan error look like success).
+          terraform_wrapper: false
 
       - name: Init
         run: terraform init -input=false
