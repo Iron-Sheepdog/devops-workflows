@@ -111,13 +111,26 @@ jobs:
             function readPlan() {
               let txt = '';
               try { txt = fs.readFileSync(`${workdir}/plan.txt`, 'utf8'); } catch (e) {}
+              // Drop the per-resource refresh/read progress lines: they are noisy
+              // AND emitted in nondeterministic (concurrent) order, so they must
+              // not feed the fingerprint. The rest of the plan renders in a stable
+              // order.
+              const noise = /: (Refreshing state|Reading\.\.\.|Read complete|Preparing import|Import prepared|Still (reading|refreshing))/;
+              const stripped = txt.split('\n').filter(l => !noise.test(l)).join('\n');
               const changed = txt.split('\n')
                 .filter(l => / # .* will be /.test(l))
                 .map(l => l.trim().replace(/^#\s*/, ''))
                 .sort();
-              const fp = crypto.createHash('sha1').update(changed.join('\n')).digest('hex').slice(0, 12);
-              let body = txt;
-              if (body.length > 55000) body = body.slice(0, 55000) + '\n...(truncated)...';
+              // Fingerprint the changed-resource set. Fall back to the whole
+              // noise-stripped plan when there are no "# ... will be ..." headers,
+              // so output-only drift (exit code 2, rendered under "Changes to
+              // Outputs:") still yields a distinct fingerprint instead of a
+              // constant sha1('') that would dedupe distinct episodes.
+              const fpInput = changed.length ? changed.join('\n') : stripped;
+              const fp = crypto.createHash('sha1').update(fpInput).digest('hex').slice(0, 12);
+              // Keep the TAIL when oversized — the "Plan:" summary is the last line.
+              let body = stripped;
+              if (body.length > 55000) body = '...(truncated)...\n' + body.slice(-55000);
               return { changed, fp, body };
             }
 
