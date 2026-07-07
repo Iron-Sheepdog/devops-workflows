@@ -81,9 +81,30 @@ jobs:
             let body = fs.readFileSync('${{ inputs.working_directory }}/plan-comment.txt', 'utf8');
             // Keep the TAIL if oversized — the "Plan:" summary is at the end.
             if (body.length > 60000) body = '...(truncated)...\n' + body.slice(-60000);
-            await github.rest.issues.createComment({
+            // Hidden marker keyed on the working directory. Re-runs UPDATE the same
+            // comment instead of appending a new one on every push, and each env
+            // (working directory) that calls this workflow gets its own comment.
+            const marker = '<!-- tf-plan:${{ inputs.working_directory }} -->';
+            const commentBody = marker + '\n#### `terraform plan` — `${{ inputs.working_directory }}`\n```\n' + body + '\n```';
+            const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: '#### `terraform plan` — `${{ inputs.working_directory }}`\n```\n' + body + '\n```'
+              per_page: 100,
             });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: commentBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody,
+              });
+            }
