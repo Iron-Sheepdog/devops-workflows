@@ -26,6 +26,10 @@ on:
       comment_on_pr:
         type: boolean
         default: true
+      label:
+        description: Short env label for the plan artifact (e.g. dev, staging). Used by callers that aggregate multiple envs into one comment.
+        type: string
+        default: plan
 
 permissions:
   contents: read
@@ -71,6 +75,18 @@ jobs:
           grep -vE ': (Refreshing state|Reading\.\.\.|Read complete|Preparing import|Import prepared|Still (reading|refreshing))' plan.txt > plan-comment.txt || true
           # detailed-exitcode: 0=no changes, 2=changes, 1=error
           [ "$code" = "1" ] && exit 1 || exit 0
+
+      # Publish the filtered plan so a caller can assemble one combined,
+      # multi-environment comment (fixed order, collapsible sections). Callers
+      # that aggregate set comment_on_pr=false and read these artifacts instead.
+      - name: Upload plan artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.label }}
+          path: ${{ inputs.working_directory }}/plan-comment.txt
+          if-no-files-found: ignore
+          retention-days: 5
 
       - name: Comment plan on PR
         if: ${{ inputs.comment_on_pr && github.event_name == 'pull_request' }}
