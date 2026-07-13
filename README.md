@@ -98,6 +98,28 @@ jobs:
 4. Findings are posted back to the pull request as inline review comments plus a summary, with severity levels (Critical → Low).
 5. When a pull request has no issues worth raising as inline comments, the review summary ends with a final `LGTM :+1:` line as a sign-off. This is steered via the review prompt (the `code-review` extension always posts a `COMMENT`-type review, so this is a tidy comment rather than a GitHub "Approved" status), and is layered on top of any `additional_context` you pass.
 
+### Converging across review rounds
+
+Because every push re-runs the full review with no built-in memory of prior rounds, the workflow
+bakes in standing process rules (layered on top of any `additional_context` you pass) so repeated
+pushes converge on "done" instead of resurfacing an endless stream of new nits:
+
+- **Thread-aware dedup** — before commenting, the review checks existing PR review threads
+  (including resolved ones) and won't re-post a duplicate; re-raising a declined suggestion happens
+  as a reply on the original thread, not a new one.
+- **Single evolving summary** — the summary comment is tagged with a `<!-- gemini-review-summary -->`
+  marker and updated in place on later rounds instead of stacking a new summary comment per push.
+- **Severity floor for inline threads** — only `MEDIUM` and above get inline review threads; `LOW`
+  observations are folded into the summary as a bullet list instead of opening a new thread.
+- **Convergence rule** — if the diff since the last review only addresses prior feedback and all
+  threads are resolved, the review refreshes the summary with the `LGTM :+1:` sign-off rather than
+  hunting for new nits.
+
+These are prompt-level instructions honored on a best-effort basis by the model, not
+deterministically enforced — expect a few rounds of drift on any given PR. See
+[issue #22](https://github.com/Iron-Sheepdog/devops-workflows/issues/22) for the full rationale and
+follow-up ideas (e.g. incremental re-review of only the delta since the last reviewed commit).
+
 ## 🛡️ Usage — Deterministic Security Scans
 
 Hard, repeatable baselines that complement the AI review. No secrets or API keys required — both tools run free.
