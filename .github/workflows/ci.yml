@@ -16,6 +16,9 @@ jobs:
     uses: ./.github/workflows/security-scans.yml
 
   gemini-review:
+    # Fork PRs don't get repository secrets, so GEMINI_API_KEY would be empty
+    # and the reusable workflow would fail rather than just skip.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
       issues: write
