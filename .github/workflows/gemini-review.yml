@@ -68,15 +68,15 @@ jobs:
         run: |-
           mkdir -p .gemini
 
-          # Standing instruction appended to every review: sign off clean PRs.
-          # The code-review extension always posts a structured summary comment,
-          # so we steer the wording instead of trying to suppress it.
-          LGTM_INSTRUCTION=$'When the diff has no issues worth raising as inline comments, end the summary comment with a final line that reads exactly "LGTM :+1:".'
+          # Standing process rules appended to every review, so review rounds
+          # converge instead of re-reviewing the whole PR from scratch each push.
+          # See https://github.com/Iron-Sheepdog/devops-workflows/issues/22.
+          STANDING_INSTRUCTIONS=$'Follow these review-process rules on every run, in addition to the usual code review:\n\n1. Thread-aware dedup: before posting any inline comment, fetch the PR\'s existing review threads via the GitHub MCP server, including resolved ones. Never re-post a suggestion that duplicates an existing thread. If you want to re-raise a point from a resolved or declined thread with new evidence, reply on that existing thread instead of opening a new one.\n2. Single evolving summary: your summary comment must start with the exact marker line `<!-- gemini-review-summary -->` on its own line. Before posting, check whether a PR issue comment already contains this marker. If one exists, update that comment in place instead of posting a new comment.\n3. Severity floor for inline threads: only open inline review threads for MEDIUM severity and above. Roll LOW-severity observations into the summary comment as a bullet list instead of inline threads.\n4. Convergence rule: if the diff since the last reviewed commit only addresses prior review feedback and all previous threads are resolved, do not hunt for new nits - update the summary comment to end in "LGTM :+1:" instead.\n\nWhen the diff has no issues worth raising as inline comments, end the summary comment with a final line that reads exactly "LGTM :+1:".'
 
           if [ -n "${ADDITIONAL_CONTEXT}" ]; then
-            REVIEW_CONTEXT=$(printf "%s\n\n%s" "${ADDITIONAL_CONTEXT}" "${LGTM_INSTRUCTION}")
+            REVIEW_CONTEXT=$(printf "%s\n\n%s" "${ADDITIONAL_CONTEXT}" "${STANDING_INSTRUCTIONS}")
           else
-            REVIEW_CONTEXT="${LGTM_INSTRUCTION}"
+            REVIEW_CONTEXT="${STANDING_INSTRUCTIONS}"
           fi
 
           {

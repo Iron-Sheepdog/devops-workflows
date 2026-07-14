@@ -1,8 +1,9 @@
 name: CI
 
-# Dogfoods our own reusable security scans against this repository on every PR,
-# and serves as a live self-test of security-scans.yml. Uses the local copy on
-# the PR branch (`./`) so changes are validated before they're released.
+# Dogfoods our own reusable security scans and Gemini code review against this
+# repository on every PR, and serves as a live self-test of both workflows.
+# Uses the local copy on the PR branch (`./`) so changes are validated before
+# they're released.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -13,3 +14,15 @@ permissions:
 jobs:
   security:
     uses: ./.github/workflows/security-scans.yml
+
+  gemini-review:
+    # Fork PRs don't get repository secrets, so GEMINI_API_KEY would be empty
+    # and the reusable workflow would fail rather than just skip.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/gemini-review.yml
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
