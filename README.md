@@ -6,27 +6,17 @@ Instead of duplicating CI/CD logic in every application repository, common autom
 
 ## 📋 Available Workflows
 
-| Workflow | File | Description |
-|---|---|---|
-| **Deterministic Security Scans** | [`.github/workflows/security-scans.yml`](.github/workflows/security-scans.yml) | Runs [Gitleaks](https://github.com/gitleaks/gitleaks) (hardcoded-secret detection across the full git history) and [Trivy](https://github.com/aquasecurity/trivy) (dependency CVE scanning) in parallel. Hard, repeatable baselines for problems LLMs are unreliable at. |
-| **Gemini Code Review** | [`.github/workflows/gemini-review.yml`](.github/workflows/gemini-review.yml) | Runs an automated code review on pull requests using the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action and the [code-review extension](https://github.com/gemini-cli-extensions/code-review). Findings are posted as inline PR review comments plus a summary, with severity levels (Critical → Low). |
+| Workflow                         | File                                                                           | Description                                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Deterministic Security Scans** | [`.github/workflows/security-scans.yml`](.github/workflows/security-scans.yml) | Runs [Gitleaks](https://github.com/gitleaks/gitleaks) (hardcoded-secret detection across the full git history) and [Trivy](https://github.com/aquasecurity/trivy) (dependency CVE scanning) in parallel. Hard, repeatable baselines for problems LLMs are unreliable at.                                                                                                  |
+| **Gemini Code Review**           | [`.github/workflows/gemini-review.yml`](.github/workflows/gemini-review.yml)   | Runs an automated code review on pull requests using the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action and the [code-review extension](https://github.com/gemini-cli-extensions/code-review). Findings are posted as inline PR review comments plus a summary, with severity levels (Critical → Low). |
 
 ## ✅ Prerequisites (Gemini Code Review)
 
-> [!IMPORTANT]
-> Due to **GitHub Free tier limitations**, organization-level secrets cannot be shared with private repositories. Each target repository must therefore configure its **own** `GEMINI_API_KEY`.
-
-In the repository that will call this workflow:
-
-1. Obtain a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
-2. Navigate to **Settings → Secrets and variables → Actions**.
-3. Click **New repository secret** and create:
-
-   | Name | Value |
-   |---|---|
-   | `GEMINI_API_KEY` | Your Gemini API key |
-
-The calling workflow must also grant `pull-requests: write` and `issues: write` permissions so the review can be posted to the pull request.
+Authentication is keyless: the workflow uses Vertex AI via Workload Identity Federation (WIF), so
+there's no per-repo API key to provision or keep alive. The calling workflow just needs to grant
+`id-token: write` (for the WIF OIDC token) plus `pull-requests: write` and `issues: write` (so the
+review can be posted to the pull request).
 
 ## 🚀 Usage — Gemini Code Review
 
@@ -43,15 +33,14 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  id-token: write # Needed for Workload Identity Federation
 
 jobs:
   gemini-review:
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 ```
 
-That's it — every pull request will now receive an automated Gemini code review.
+That's it — every pull request will now receive an automated Gemini code review. No API key to configure.
 
 ### Excluding automated PRs
 
@@ -63,20 +52,20 @@ jobs:
     # Skip release-please version-bump PRs
     if: "!startsWith(github.head_ref, 'release-please--')"
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 ```
 
 For Dependabot, use `github.actor != 'dependabot[bot]'`. Both conditions can be combined with `&&`.
 
 ### Optional inputs
 
-| Input | Default | Description |
-|---|---|---|
-| `additional_context` | _(empty)_ | Extra instructions for the review (e.g. `"Focus on security vulnerabilities"`). |
-| `gemini_model` | `gemini-3.5-flash` | Gemini model used for the review. |
-| `upload_artifacts` | `false` | Upload the Gemini CLI's `stdout.log`, `stderr.log`, and `telemetry.log` as a workflow artifact (`gemini-output`) for diagnostics. |
-| `gemini_debug` | `false` | Enable Gemini CLI debug logging and stream responses to the job log. May expose sensitive content; turn on only when diagnosing issues. |
+| Input                | Default             | Description                                                                                                                             |
+| -------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `additional_context` | _(empty)_           | Extra instructions for the review (e.g. `"Focus on security vulnerabilities"`).                                                         |
+| `gemini_model`       | `gemini-3.5-flash`  | Gemini model used for the review.                                                                                                       |
+| `upload_artifacts`   | `false`             | Upload the Gemini CLI's `stdout.log`, `stderr.log`, and `telemetry.log` as a workflow artifact (`gemini-output`) for diagnostics.       |
+| `gemini_debug`       | `false`             | Enable Gemini CLI debug logging and stream responses to the job log. May expose sensitive content; turn on only when diagnosing issues. |
+| `gcp_project_id`     | `iron-sheepdog-dev` | GCP project the review authenticates against via Workload Identity Federation. Use `isd-ai-innovation` for internal OpEx/analyst repos. |
+| `gcp_location`       | `us-central1`       | GCP region for Vertex AI inference.                                                                                                     |
 
 Pass them via `with:` in the calling job:
 
@@ -86,14 +75,12 @@ jobs:
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
     with:
       additional_context: Focus on Firestore security rules and query efficiency.
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 ```
 
 ### How it works
 
 1. A pull request is opened or updated in your repository.
-2. Your workflow calls the reusable `gemini-review.yml` workflow in this repo, explicitly passing your repository's `GEMINI_API_KEY` secret.
+2. Your workflow calls the reusable `gemini-review.yml` workflow in this repo. Authentication is handled transparently via Workload Identity Federation — nothing to configure on the caller side beyond the `id-token: write` permission.
 3. The workflow checks out the code and runs the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action with the [`code-review` extension](https://github.com/gemini-cli-extensions/code-review) (`/pr-code-review`), which reads the PR via the GitHub MCP server and reviews security, performance, reliability, maintainability, and functionality.
 4. Findings are posted back to the pull request as inline review comments plus a summary, with severity levels (Critical → Low).
 5. When a pull request has no issues worth raising as inline comments, the review summary ends with a final `LGTM :+1:` line as a sign-off. This is steered via the review prompt (the `code-review` extension always posts a `COMMENT`-type review, so this is a tidy comment rather than a GitHub "Approved" status), and is layered on top of any `additional_context` you pass.
@@ -159,6 +146,7 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  id-token: write # Needed for Workload Identity Federation
 
 jobs:
   security-baseline:
@@ -169,32 +157,30 @@ jobs:
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
     with:
       gemini_model: gemini-3.5-flash
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 ```
 
 ### Inputs
 
-| Input | Default | Description |
-|---|---|---|
-| `severity` | `CRITICAL,HIGH` | Comma-separated Trivy severities to report. |
-| `trivy_exit_code` | `"0"` | Trivy exit code on findings. `"0"` = report-only; `"1"` = fail the build. |
-| `gitleaks_exit_code` | `"1"` | Gitleaks exit code on findings. `"1"` = fail the build; `"0"` = report-only. |
-| `scan_ref` | `.` | Filesystem path Trivy scans. |
-| `node_version` | `22.x` | Node version used for environment context. |
-| `run_gitleaks` | `true` | Toggle the Gitleaks job. |
-| `run_trivy` | `true` | Toggle the Trivy job. |
+| Input                | Default         | Description                                                                  |
+| -------------------- | --------------- | ---------------------------------------------------------------------------- |
+| `severity`           | `CRITICAL,HIGH` | Comma-separated Trivy severities to report.                                  |
+| `trivy_exit_code`    | `"0"`           | Trivy exit code on findings. `"0"` = report-only; `"1"` = fail the build.    |
+| `gitleaks_exit_code` | `"1"`           | Gitleaks exit code on findings. `"1"` = fail the build; `"0"` = report-only. |
+| `scan_ref`           | `.`             | Filesystem path Trivy scans.                                                 |
+| `node_version`       | `22.x`          | Node version used for environment context.                                   |
+| `run_gitleaks`       | `true`          | Toggle the Gitleaks job.                                                     |
+| `run_trivy`          | `true`          | Toggle the Trivy job.                                                        |
 
 ## 🏷️ Versioning
 
 This repo follows [Semantic Versioning](https://semver.org/). Each release is cut as an immutable tag (`v1.0.0`, `v1.1.0`, …), and a **moving major tag** (`v1`) always points at the latest `v1.x.x`.
 
-| Pin | Behaviour | Use when |
-|---|---|---|
-| `@v1` | Latest non-breaking `v1.x.x` (recommended) | Normal usage — get fixes & features, never a breaking change |
-| `@v1.2.3` | Exact release, never moves | You need a fully reproducible pin |
-| `@<sha>` | Exact commit | Maximum strictness / security |
-| `@main` | Bleeding edge | Testing unreleased changes only — **not** for production callers |
+| Pin       | Behaviour                                  | Use when                                                         |
+| --------- | ------------------------------------------ | ---------------------------------------------------------------- |
+| `@v1`     | Latest non-breaking `v1.x.x` (recommended) | Normal usage — get fixes & features, never a breaking change     |
+| `@v1.2.3` | Exact release, never moves                 | You need a fully reproducible pin                                |
+| `@<sha>`  | Exact commit                               | Maximum strictness / security                                    |
+| `@main`   | Bleeding edge                              | Testing unreleased changes only — **not** for production callers |
 
 Breaking changes ship under a new major tag (`v2`); the old major (`v1`) keeps working so consumers migrate on their own schedule.
 
