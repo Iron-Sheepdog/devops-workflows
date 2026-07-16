@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   gemini-review:
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
 ```
 
 That's it — every pull request will now receive an automated Gemini code review. No API key to configure.
@@ -51,7 +51,7 @@ jobs:
   gemini-review:
     # Skip release-please version-bump PRs
     if: "!startsWith(github.head_ref, 'release-please--')"
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
 ```
 
 For Dependabot, use `github.actor != 'dependabot[bot]'`. Both conditions can be combined with `&&`.
@@ -74,7 +74,7 @@ Pass them via `with:` in the calling job:
 ```yaml
 jobs:
   gemini-review:
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
     with:
       additional_context: Focus on Firestore security rules and query efficiency.
 ```
@@ -130,7 +130,7 @@ on:
 
 jobs:
   security:
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v1
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v2
 ```
 
 ### Hybrid guardrails (recommended)
@@ -152,11 +152,11 @@ permissions:
 
 jobs:
   security-baseline:
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v1
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v2
 
   ai-code-review:
     needs: security-baseline # Only run the AI review if the deterministic checks pass.
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v1
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
     with:
       gemini_model: gemini-3.5-flash
 ```
