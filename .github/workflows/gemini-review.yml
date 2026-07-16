@@ -49,6 +49,14 @@ on:
         description: GCP region for Vertex AI inference.
         required: false
         default: global
+      gcp_workload_identity_provider:
+        type: string
+        description: The full resource name of the GCP Workload Identity Provider. If omitted, falls back to the caller's `VERTEX_WIF_PROVIDER` repository/organization variable.
+        required: false
+      gcp_service_account:
+        type: string
+        description: The GCP service account email to impersonate. If omitted, falls back to the caller's `VERTEX_REVIEW_SA` repository/organization variable.
+        required: false
 
 concurrency:
   group: '${{ github.workflow }}-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}'
@@ -118,8 +126,8 @@ jobs:
           use_vertex_ai: true
           gcp_project_id: '${{ inputs.gcp_project_id }}'
           gcp_location: '${{ inputs.gcp_location }}'
-          gcp_workload_identity_provider: '${{ vars.VERTEX_WIF_PROVIDER }}'
-          gcp_service_account: '${{ vars.VERTEX_REVIEW_SA }}'
+          gcp_workload_identity_provider: '${{ inputs.gcp_workload_identity_provider || vars.VERTEX_WIF_PROVIDER }}'
+          gcp_service_account: '${{ inputs.gcp_service_account || vars.VERTEX_REVIEW_SA }}'
           gemini_model: '${{ inputs.gemini_model }}'
           gemini_debug: '${{ inputs.gemini_debug }}'
           upload_artifacts: '${{ inputs.upload_artifacts }}'
