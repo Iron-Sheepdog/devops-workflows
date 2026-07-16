@@ -48,7 +48,7 @@ on:
         type: string
         description: GCP region for Vertex AI inference.
         required: false
-        default: us-central1
+        default: us
 
 concurrency:
   group: '${{ github.workflow }}-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}'
