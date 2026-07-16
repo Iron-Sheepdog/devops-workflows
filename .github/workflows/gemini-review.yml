@@ -118,8 +118,8 @@ jobs:
           use_vertex_ai: true
           gcp_project_id: '${{ inputs.gcp_project_id }}'
           gcp_location: '${{ inputs.gcp_location }}'
-          gcp_workload_identity_provider: '${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}'
-          gcp_service_account: '${{ vars.GCP_SERVICE_ACCOUNT }}'
+          gcp_workload_identity_provider: '${{ vars.VERTEX_WIF_PROVIDER }}'
+          gcp_service_account: '${{ vars.VERTEX_REVIEW_SA }}'
           gemini_model: '${{ inputs.gemini_model }}'
           gemini_debug: '${{ inputs.gemini_debug }}'
           upload_artifacts: '${{ inputs.upload_artifacts }}'
