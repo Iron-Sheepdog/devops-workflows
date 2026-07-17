@@ -10,6 +10,12 @@ Instead of duplicating CI/CD logic in every application repository, common autom
 |---|---|---|
 | **Deterministic Security Scans** | [`.github/workflows/security-scans.yml`](.github/workflows/security-scans.yml) | Runs [Gitleaks](https://github.com/gitleaks/gitleaks) (hardcoded-secret detection across the full git history) and [Trivy](https://github.com/aquasecurity/trivy) (dependency CVE scanning) in parallel. Hard, repeatable baselines for problems LLMs are unreliable at. |
 | **Gemini Code Review** | [`.github/workflows/gemini-review.yml`](.github/workflows/gemini-review.yml) | Runs an automated code review on pull requests using the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action and the [code-review extension](https://github.com/gemini-cli-extensions/code-review). Findings are posted as inline PR review comments plus a summary, with severity levels (Critical → Low). |
+| **Terraform Plan** | [`.github/workflows/terraform-plan.yml`](.github/workflows/terraform-plan.yml) | Runs `terraform plan` for a given `working_directory` on pull requests, authenticating keylessly via Workload Identity Federation, and comments the filtered plan output on the PR (updated in place across pushes). Read-only — never applies. |
+| **Terraform Apply** | [`.github/workflows/terraform-apply.yml`](.github/workflows/terraform-apply.yml) | Plans to a saved file (`-out=tfplan`) then applies that exact plan for a given `working_directory`. Has no trigger of its own — the caller must gate it (e.g. `workflow_dispatch`, optionally behind a GitHub Environment approval) so applies stay a deliberate human action. |
+| **Terraform Drift Detection** | [`.github/workflows/terraform-drift.yml`](.github/workflows/terraform-drift.yml) | Runs `terraform plan -detailed-exitcode` on a schedule; opens/updates/closes a tracking GitHub issue and posts to Slack only when the set of drifting resources changes. Report-only — never applies. |
+
+> [!NOTE]
+> The three `terraform-*.yml` workflows are marked `DRAFT — review and test before relying on it.` in their own header comments. They're functional and already used by at least one consumer, but flagged by their author as not yet as hardened/reviewed as the workflows above — read them before depending on them heavily.
 
 ## ✅ Prerequisites (Gemini Code Review)
 
@@ -184,6 +190,82 @@ jobs:
 | `node_version` | `22.x` | Node version used for environment context. |
 | `run_gitleaks` | `true` | Toggle the Gitleaks job. |
 | `run_trivy` | `true` | Toggle the Trivy job. |
+
+## 🌍 Usage — Terraform Plan / Apply / Drift
+
+All three share the same core inputs: `working_directory` (required, e.g. `infrastructure/envs/dev`), `wif_provider` and `service_account` (required — the Workload Identity Federation identity to impersonate), and `terraform_version` (default `1.15.6`). Callers with multiple environments typically invoke each workflow once per environment via a `strategy.matrix`.
+
+**Plan** — call on `pull_request`, path-filtered to your Terraform directory:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "infrastructure/**"
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  plan:
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/terraform-plan.yml@v1
+    with:
+      working_directory: infrastructure/envs/dev
+      wif_provider: ${{ secrets.WIF_PROVIDER_DEV }}
+      service_account: ${{ secrets.TERRAFORM_SA_DEV }}
+```
+
+Additional inputs: `comment_on_pr` (default `true`) and `label` (default `plan`, names the uploaded `tfplan-<label>` artifact) — set `comment_on_pr: false` and aggregate the artifacts yourself if you call this once per environment and want one combined PR comment instead of one per environment.
+
+**Apply** — call only from a caller gated behind `workflow_dispatch` (never `push`/`schedule`), so applies stay a deliberate human action:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, prod]
+
+jobs:
+  apply:
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/terraform-apply.yml@v1
+    with:
+      working_directory: infrastructure/envs/${{ inputs.environment }}
+      wif_provider: ${{ secrets.WIF_PROVIDER_PROD }}
+      service_account: ${{ secrets.TERRAFORM_SA_PROD }}
+```
+
+Applies against the same `working_directory` are serialized (a `concurrency` group keyed on it) — a second apply queues instead of racing the first.
+
+**Drift Detection** — call on a `schedule`; needs `issues: write` to open/close a tracking issue and a Slack webhook secret:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 13 * * *"
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+jobs:
+  drift:
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/terraform-drift.yml@v1
+    with:
+      working_directory: infrastructure/envs/dev
+      environment: dev
+      wif_provider: ${{ secrets.WIF_PROVIDER_DEV }}
+      service_account: ${{ secrets.TERRAFORM_SA_DEV }}
+    secrets:
+      slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+Report-only — never applies. Alerts (and the tracking issue) update only when the set of drifting resources changes, not on every scheduled run while the same drift persists.
 
 ## 🏷️ Versioning
 
