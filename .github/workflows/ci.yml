@@ -16,13 +16,12 @@ jobs:
     uses: ./.github/workflows/security-scans.yml
 
   gemini-review:
-    # Fork PRs don't get repository secrets, so GEMINI_API_KEY would be empty
-    # and the reusable workflow would fail rather than just skip.
+    # Fork PRs can't mint the WIF OIDC token (no id-token access), so the
+    # reusable workflow would fail to authenticate rather than just skip.
     if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
       issues: write
       pull-requests: write
+      id-token: write
     uses: ./.github/workflows/gemini-review.yml
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

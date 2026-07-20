@@ -17,9 +17,9 @@ duplicating CI/CD logic locally.
 
 ## Workflows
 
-| File | Purpose |
-|---|---|
-| `.github/workflows/gemini-review.yml` | Reusable PR code review using Google's `gemini-3.5-flash` (via `google-github-actions/run-gemini-cli@v0`). Requires the caller to pass a `GEMINI_API_KEY` secret. |
+| File                                  | Purpose                                                                                                                                                                                                         |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/gemini-review.yml` | Reusable PR code review using Google's `gemini-3.5-flash` (via `google-github-actions/run-gemini-cli@v0`). Authenticates to Vertex AI keylessly via Workload Identity Federation — no per-repo secret required. |
 
 ## Conventions
 

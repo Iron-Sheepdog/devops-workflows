@@ -1,9 +1,11 @@
 name: Gemini Code Review (Reusable)
 
-# Reusable workflow: call this from another repo/workflow via `uses:` and
-# `jobs.<id>.secrets`. It runs an automated code review on the pull request
-# using the official google-github-actions/run-gemini-cli action and the
-# Gemini CLI code-review extension, posting inline review comments.
+# Reusable workflow: call this from another repo/workflow via `uses:`. It runs
+# an automated code review on the pull request using the official
+# google-github-actions/run-gemini-cli action and the Gemini CLI code-review
+# extension, posting inline review comments. Authenticates to Vertex AI
+# keylessly via Workload Identity Federation - the calling job just needs
+# `permissions: id-token: write`.
 #
 # Adapted from the official example:
 # https://github.com/google-github-actions/run-gemini-cli/tree/main/examples/workflows/pr-review
@@ -36,10 +38,25 @@ on:
           calls).
         required: false
         default: 100
-    secrets:
-      GEMINI_API_KEY:
-        description: API key for the Gemini API, used to authenticate the review action.
-        required: true
+      gcp_project_id:
+        type: string
+        description:
+          GCP project the review authenticates against via Workload Identity Federation. Use `iron-sheepdog-dev` for engineering R&D repos or `isd-ai-innovation` for internal OpEx/analyst repos.
+        required: false
+        default: iron-sheepdog-dev
+      gcp_location:
+        type: string
+        description: GCP region for Vertex AI inference.
+        required: false
+        default: global
+      gcp_workload_identity_provider:
+        type: string
+        description: The full resource name of the GCP Workload Identity Provider. If omitted, falls back to the caller's `VERTEX_WIF_PROVIDER` repository/organization variable.
+        required: false
+      gcp_service_account:
+        type: string
+        description: The GCP service account email to impersonate. If omitted, falls back to the caller's `VERTEX_REVIEW_SA` repository/organization variable.
+        required: false
 
 concurrency:
   group: '${{ github.workflow }}-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}'
@@ -58,6 +75,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # ratchet:actions/checkout@v6
@@ -101,12 +119,15 @@ jobs:
         env:
           GEMINI_CLI_TRUST_WORKSPACE: 'true'
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
-          GEMINI_API_KEY: '${{ secrets.GEMINI_API_KEY }}'
           REPOSITORY: '${{ github.repository }}'
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
           ADDITIONAL_CONTEXT: '${{ env.REVIEW_CONTEXT }}'
         with:
-          gemini_api_key: '${{ secrets.GEMINI_API_KEY }}'
+          use_vertex_ai: true
+          gcp_project_id: '${{ inputs.gcp_project_id }}'
+          gcp_location: '${{ inputs.gcp_location }}'
+          gcp_workload_identity_provider: '${{ inputs.gcp_workload_identity_provider || vars.VERTEX_WIF_PROVIDER }}'
+          gcp_service_account: '${{ inputs.gcp_service_account || vars.VERTEX_REVIEW_SA }}'
           gemini_model: '${{ inputs.gemini_model }}'
           gemini_debug: '${{ inputs.gemini_debug }}'
           upload_artifacts: '${{ inputs.upload_artifacts }}'
