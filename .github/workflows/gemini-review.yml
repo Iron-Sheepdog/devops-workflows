@@ -41,14 +41,13 @@ on:
       gcp_project_id:
         type: string
         description:
-          GCP project the review authenticates against via Workload Identity Federation. Use `iron-sheepdog-dev` for engineering R&D repos or `isd-ai-innovation` for internal OpEx/analyst repos.
+          GCP project the review authenticates against via Workload Identity Federation. Use `iron-sheepdog-dev` for engineering R&D repos or `isd-ai-innovation` for internal OpEx/analyst repos. If
+          omitted, falls back to the caller's `VERTEX_PROJECT` repository/organization variable, then to `iron-sheepdog-dev`.
         required: false
-        default: iron-sheepdog-dev
       gcp_location:
         type: string
-        description: GCP region for Vertex AI inference.
+        description: GCP region for Vertex AI inference. If omitted, falls back to the caller's `VERTEX_LOCATION` repository/organization variable, then to `global`.
         required: false
-        default: global
       gcp_workload_identity_provider:
         type: string
         description: The full resource name of the GCP Workload Identity Provider. If omitted, falls back to the caller's `VERTEX_WIF_PROVIDER` repository/organization variable.
@@ -124,8 +123,8 @@ jobs:
           ADDITIONAL_CONTEXT: '${{ env.REVIEW_CONTEXT }}'
         with:
           use_vertex_ai: true
-          gcp_project_id: '${{ inputs.gcp_project_id }}'
-          gcp_location: '${{ inputs.gcp_location }}'
+          gcp_project_id: "${{ inputs.gcp_project_id || vars.VERTEX_PROJECT || 'iron-sheepdog-dev' }}"
+          gcp_location: "${{ inputs.gcp_location || vars.VERTEX_LOCATION || 'global' }}"
           gcp_workload_identity_provider: '${{ inputs.gcp_workload_identity_provider || vars.VERTEX_WIF_PROVIDER }}'
           gcp_service_account: '${{ inputs.gcp_service_account || vars.VERTEX_REVIEW_SA }}'
           gemini_model: '${{ inputs.gemini_model }}'
