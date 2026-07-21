@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.0.0...v2.0.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* **gemini-review:** bake in a shared WIF default so Free-tier private repos work ([#31](https://github.com/Iron-Sheepdog/devops-workflows/issues/31)) ([d51dc19](https://github.com/Iron-Sheepdog/devops-workflows/commit/d51dc19b193c8cdad17b4044de97e2d46496a6fb))
+
 ## [2.0.0](https://github.com/Iron-Sheepdog/devops-workflows/compare/v1.3.0...v2.0.0) (2026-07-20)
 
 
