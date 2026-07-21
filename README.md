@@ -7,7 +7,7 @@ Instead of duplicating CI/CD logic in every application repository, common autom
 ## 📋 Available Workflows
 
 | Workflow                         | File                                                                           | Description                                                                                                                                                                                                                                                                                                                                                               |
-| --------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| -------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Deterministic Security Scans** | [`.github/workflows/security-scans.yml`](.github/workflows/security-scans.yml) | Runs [Gitleaks](https://github.com/gitleaks/gitleaks) (hardcoded-secret detection across the full git history) and [Trivy](https://github.com/aquasecurity/trivy) (dependency CVE scanning) in parallel. Hard, repeatable baselines for problems LLMs are unreliable at.                                                                                                  |
 | **Gemini Code Review**           | [`.github/workflows/gemini-review.yml`](.github/workflows/gemini-review.yml)   | Runs an automated code review on pull requests using the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action and the [code-review extension](https://github.com/gemini-cli-extensions/code-review). Findings are posted as inline PR review comments plus a summary, with severity levels (Critical → Low). |
 
@@ -44,7 +44,7 @@ jobs:
   security-baseline:
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v2
 
-  ai-code-review:
+  gemini-review:
     needs: security-baseline # Only run the AI review if the deterministic checks pass.
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
     with:
@@ -60,7 +60,7 @@ jobs:
   security-baseline:
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v2
 
-  ai-code-review:
+  gemini-review:
     needs: security-baseline
     # Skip release-please version-bump PRs
     if: "!startsWith(github.head_ref, 'release-please--')"
@@ -72,7 +72,7 @@ For Dependabot, use `github.actor != 'dependabot[bot]'`. Both conditions can be 
 ### Optional inputs — Gemini Code Review
 
 | Input                            | Default             | Description                                                                                                                                         |
-| --------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| -------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `additional_context`             | _(empty)_           | Extra instructions for the review (e.g. `"Focus on security vulnerabilities"`).                                                                     |
 | `gemini_model`                   | `gemini-3.5-flash`  | Gemini model used for the review.                                                                                                                   |
 | `upload_artifacts`               | `false`             | Upload the Gemini CLI's `stdout.log`, `stderr.log`, and `telemetry.log` as a workflow artifact (`gemini-output`) for diagnostics.                   |
@@ -86,7 +86,7 @@ Pass them via `with:` in the calling job:
 
 ```yaml
 jobs:
-  ai-code-review:
+  gemini-review:
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
     with:
       additional_context: Focus on Firestore security rules and query efficiency.
@@ -95,7 +95,7 @@ jobs:
 ### Optional inputs — Security Scans
 
 | Input                | Default         | Description                                                                  |
-| --------------------- | --------------- | ----------------------------------------------------------------------------- |
+| -------------------- | --------------- | ---------------------------------------------------------------------------- |
 | `severity`           | `CRITICAL,HIGH` | Comma-separated Trivy severities to report.                                  |
 | `trivy_exit_code`    | `"0"`           | Trivy exit code on findings. `"0"` = report-only; `"1"` = fail the build.    |
 | `gitleaks_exit_code` | `"1"`           | Gitleaks exit code on findings. `"1"` = fail the build; `"0"` = report-only. |
@@ -169,6 +169,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+
 jobs:
   security:
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v2
@@ -181,7 +184,7 @@ No secrets or API keys required — both tools run free. See [Optional inputs �
 This repo follows [Semantic Versioning](https://semver.org/). Each release is cut as an immutable tag (`v1.0.0`, `v1.1.0`, …), and a **moving major tag** (`v1`) always points at the latest `v1.x.x`.
 
 | Pin       | Behaviour                                  | Use when                                                         |
-| --------- | ------------------------------------------ | ------------------------------------------------------------------ |
+| --------- | ------------------------------------------ | ---------------------------------------------------------------- |
 | `@v1`     | Latest non-breaking `v1.x.x` (recommended) | Normal usage — get fixes & features, never a breaking change     |
 | `@v1.2.3` | Exact release, never moves                 | You need a fully reproducible pin                                |
 | `@<sha>`  | Exact commit                               | Maximum strictness / security                                    |
