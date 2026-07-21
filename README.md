@@ -7,23 +7,28 @@ Instead of duplicating CI/CD logic in every application repository, common autom
 ## 📋 Available Workflows
 
 | Workflow                         | File                                                                           | Description                                                                                                                                                                                                                                                                                                                                                               |
-| -------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| --------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Deterministic Security Scans** | [`.github/workflows/security-scans.yml`](.github/workflows/security-scans.yml) | Runs [Gitleaks](https://github.com/gitleaks/gitleaks) (hardcoded-secret detection across the full git history) and [Trivy](https://github.com/aquasecurity/trivy) (dependency CVE scanning) in parallel. Hard, repeatable baselines for problems LLMs are unreliable at.                                                                                                  |
 | **Gemini Code Review**           | [`.github/workflows/gemini-review.yml`](.github/workflows/gemini-review.yml)   | Runs an automated code review on pull requests using the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action and the [code-review extension](https://github.com/gemini-cli-extensions/code-review). Findings are posted as inline PR review comments plus a summary, with severity levels (Critical → Low). |
 
-## ✅ Prerequisites (Gemini Code Review)
+## 🚀 Usage — Hybrid Guardrails (recommended)
 
-Authentication is keyless: the workflow uses Vertex AI via Workload Identity Federation (WIF), so
-there's no per-repo API key to provision or keep alive. The calling workflow just needs to grant
-`id-token: write` (for the WIF OIDC token) plus `pull-requests: write` and `issues: write` (so the
-review can be posted to the pull request).
+Run the deterministic security baseline first, and only spend an AI review on PRs that clear it. This is the **recommended default** for every repo: it pairs the hard, repeatable checks (Gitleaks + Trivy) with the more exploratory Gemini code review, without wasting an AI pass on a PR that fails the baseline.
 
-## 🚀 Usage — Gemini Code Review
+> [!NOTE]
+> We run the **Gitleaks CLI binary** directly rather than `gitleaks/gitleaks-action`, because that action requires a **paid license** to scan repositories owned by an organization. The Trivy action is **pinned to a commit SHA** — `trivy-action` has been the target of supply-chain attacks via mutable tags, so never pin it to `@master` or a version tag.
 
-In your application repository, create `.github/workflows/code-review.yml` with the following content:
+### Prerequisites
+
+Both halves of this pipeline are keyless — no secrets or API keys to provision:
+
+- **Security scans** need no authentication at all.
+- **Gemini review** authenticates via Vertex AI over Workload Identity Federation (WIF). The calling workflow just needs to grant `id-token: write` (for the WIF OIDC token) plus `pull-requests: write` and `issues: write` (so the review can be posted to the pull request).
+
+In your application repository, create `.github/workflows/pr-quality.yml` with the following content:
 
 ```yaml
-name: Code Review
+name: PR Quality Guardrails
 
 on:
   pull_request:
@@ -36,19 +41,27 @@ permissions:
   id-token: write # Needed for Workload Identity Federation
 
 jobs:
-  gemini-review:
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
-```
+  security-baseline:
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v2
 
-That's it — every pull request will now receive an automated Gemini code review. No API key to configure.
+  ai-code-review:
+    needs: security-baseline # Only run the AI review if the deterministic checks pass.
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
+    with:
+      gemini_model: gemini-3.5-flash
+```
 
 ### Excluding automated PRs
 
-If your repository uses tools like [release-please](https://github.com/googleapis/release-please) or Dependabot, you likely want to skip the review on those machine-generated PRs. Add an `if` condition to the job:
+If your repository uses tools like [release-please](https://github.com/googleapis/release-please) or Dependabot, you likely want to skip the AI review on those machine-generated PRs. Add an `if` condition to the job:
 
 ```yaml
 jobs:
-  gemini-review:
+  security-baseline:
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v2
+
+  ai-code-review:
+    needs: security-baseline
     # Skip release-please version-bump PRs
     if: "!startsWith(github.head_ref, 'release-please--')"
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
@@ -56,10 +69,10 @@ jobs:
 
 For Dependabot, use `github.actor != 'dependabot[bot]'`. Both conditions can be combined with `&&`.
 
-### Optional inputs
+### Optional inputs — Gemini Code Review
 
 | Input                            | Default             | Description                                                                                                                                         |
-| -------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| --------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `additional_context`             | _(empty)_           | Extra instructions for the review (e.g. `"Focus on security vulnerabilities"`).                                                                     |
 | `gemini_model`                   | `gemini-3.5-flash`  | Gemini model used for the review.                                                                                                                   |
 | `upload_artifacts`               | `false`             | Upload the Gemini CLI's `stdout.log`, `stderr.log`, and `telemetry.log` as a workflow artifact (`gemini-output`) for diagnostics.                   |
@@ -73,13 +86,25 @@ Pass them via `with:` in the calling job:
 
 ```yaml
 jobs:
-  gemini-review:
+  ai-code-review:
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
     with:
       additional_context: Focus on Firestore security rules and query efficiency.
 ```
 
-### How it works
+### Optional inputs — Security Scans
+
+| Input                | Default         | Description                                                                  |
+| --------------------- | --------------- | ----------------------------------------------------------------------------- |
+| `severity`           | `CRITICAL,HIGH` | Comma-separated Trivy severities to report.                                  |
+| `trivy_exit_code`    | `"0"`           | Trivy exit code on findings. `"0"` = report-only; `"1"` = fail the build.    |
+| `gitleaks_exit_code` | `"1"`           | Gitleaks exit code on findings. `"1"` = fail the build; `"0"` = report-only. |
+| `scan_ref`           | `.`             | Filesystem path Trivy scans.                                                 |
+| `node_version`       | `22.x`          | Node version used for environment context.                                   |
+| `run_gitleaks`       | `true`          | Toggle the Gitleaks job.                                                     |
+| `run_trivy`          | `true`          | Toggle the Trivy job.                                                        |
+
+### How the Gemini review works
 
 1. A pull request is opened or updated in your repository.
 2. Your workflow calls the reusable `gemini-review.yml` workflow in this repo. Authentication is handled transparently via Workload Identity Federation — nothing to configure on the caller side beyond the `id-token: write` permission.
@@ -109,17 +134,33 @@ deterministically enforced — expect a few rounds of drift on any given PR. See
 [issue #22](https://github.com/Iron-Sheepdog/devops-workflows/issues/22) for the full rationale and
 follow-up ideas (e.g. incremental re-review of only the delta since the last reviewed commit).
 
-## 🛡️ Usage — Deterministic Security Scans
+## 🔀 Picking it apart (standalone workflows)
 
-Hard, repeatable baselines that complement the AI review. No secrets or API keys required — both tools run free.
+The hybrid setup above is the recommended default, but each workflow also runs fine on its own — e.g. a repo that doesn't want the AI review yet, or wants security scanning without the extra `id-token` permission.
 
-- **Gitleaks** scans the **entire git history** for hardcoded secrets (API keys, tokens). By default a finding **fails the build**.
-- **Trivy** scans your dependency manifests for known **CVEs**. By default it is **report-only** (findings appear in the job log but don't fail the build), since CVEs often live in transitive dependencies with no available fix. Tighten it to blocking with `trivy_exit_code: "1"` once your dependencies are clean.
+### Code Review only
 
-> [!NOTE]
-> We run the **Gitleaks CLI binary** directly rather than `gitleaks/gitleaks-action`, because that action requires a **paid license** to scan repositories owned by an organization. The Trivy action is **pinned to a commit SHA** — `trivy-action` has been the target of supply-chain attacks via mutable tags, so never pin it to `@master` or a version tag.
+```yaml
+name: Code Review
 
-### Standalone
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  id-token: write # Needed for Workload Identity Federation
+
+jobs:
+  gemini-review:
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
+```
+
+That's it — every pull request will now receive an automated Gemini code review. No API key to configure. See [Excluding automated PRs](#excluding-automated-prs) and [Optional inputs — Gemini Code Review](#optional-inputs--gemini-code-review) above for the same knobs as the hybrid setup.
+
+### Security Scans only
 
 ```yaml
 name: Security Scans
@@ -133,52 +174,14 @@ jobs:
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v2
 ```
 
-### Hybrid guardrails (recommended)
-
-Run the deterministic baseline first, and only spend an AI review on PRs that clear it:
-
-```yaml
-name: PR Quality Guardrails
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
-  id-token: write # Needed for Workload Identity Federation
-
-jobs:
-  security-baseline:
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/security-scans.yml@v2
-
-  ai-code-review:
-    needs: security-baseline # Only run the AI review if the deterministic checks pass.
-    uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
-    with:
-      gemini_model: gemini-3.5-flash
-```
-
-### Inputs
-
-| Input                | Default         | Description                                                                  |
-| -------------------- | --------------- | ---------------------------------------------------------------------------- |
-| `severity`           | `CRITICAL,HIGH` | Comma-separated Trivy severities to report.                                  |
-| `trivy_exit_code`    | `"0"`           | Trivy exit code on findings. `"0"` = report-only; `"1"` = fail the build.    |
-| `gitleaks_exit_code` | `"1"`           | Gitleaks exit code on findings. `"1"` = fail the build; `"0"` = report-only. |
-| `scan_ref`           | `.`             | Filesystem path Trivy scans.                                                 |
-| `node_version`       | `22.x`          | Node version used for environment context.                                   |
-| `run_gitleaks`       | `true`          | Toggle the Gitleaks job.                                                     |
-| `run_trivy`          | `true`          | Toggle the Trivy job.                                                        |
+No secrets or API keys required — both tools run free. See [Optional inputs — Security Scans](#optional-inputs--security-scans) above.
 
 ## 🏷️ Versioning
 
 This repo follows [Semantic Versioning](https://semver.org/). Each release is cut as an immutable tag (`v1.0.0`, `v1.1.0`, …), and a **moving major tag** (`v1`) always points at the latest `v1.x.x`.
 
 | Pin       | Behaviour                                  | Use when                                                         |
-| --------- | ------------------------------------------ | ---------------------------------------------------------------- |
+| --------- | ------------------------------------------ | ------------------------------------------------------------------ |
 | `@v1`     | Latest non-breaking `v1.x.x` (recommended) | Normal usage — get fixes & features, never a breaking change     |
 | `@v1.2.3` | Exact release, never moves                 | You need a fully reproducible pin                                |
 | `@<sha>`  | Exact commit                               | Maximum strictness / security                                    |
