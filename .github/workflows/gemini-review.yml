@@ -51,11 +51,15 @@ on:
         default: global
       gcp_workload_identity_provider:
         type: string
-        description: The full resource name of the GCP Workload Identity Provider. If omitted, falls back to the caller's `VERTEX_WIF_PROVIDER` repository/organization variable.
+        description:
+          The full resource name of the GCP Workload Identity Provider. Resolution order - this input, then the caller's `VERTEX_WIF_PROVIDER` repository/organization variable (GitHub Free doesn't
+          propagate org variables to private repos), then the shared Iron-Sheepdog WIF pool baked into this workflow.
         required: false
       gcp_service_account:
         type: string
-        description: The GCP service account email to impersonate. If omitted, falls back to the caller's `VERTEX_REVIEW_SA` repository/organization variable.
+        description:
+          The GCP service account email to impersonate. Resolution order - this input, then the caller's `VERTEX_REVIEW_SA` repository/organization variable (GitHub Free doesn't propagate org
+          variables to private repos), then the shared gemini-review service account baked into this workflow.
         required: false
 
 concurrency:
@@ -126,8 +130,9 @@ jobs:
           use_vertex_ai: true
           gcp_project_id: '${{ inputs.gcp_project_id }}'
           gcp_location: '${{ inputs.gcp_location }}'
-          gcp_workload_identity_provider: '${{ inputs.gcp_workload_identity_provider || vars.VERTEX_WIF_PROVIDER }}'
-          gcp_service_account: '${{ inputs.gcp_service_account || vars.VERTEX_REVIEW_SA }}'
+          gcp_workload_identity_provider:
+            "${{ inputs.gcp_workload_identity_provider || vars.VERTEX_WIF_PROVIDER || 'projects/1094991255833/locations/global/workloadIdentityPools/github-actions-shared/providers/github' }}"
+          gcp_service_account: "${{ inputs.gcp_service_account || vars.VERTEX_REVIEW_SA || 'gemini-review@iron-sheepdog-dev.iam.gserviceaccount.com' }}"
           gemini_model: '${{ inputs.gemini_model }}'
           gemini_debug: '${{ inputs.gemini_debug }}'
           upload_artifacts: '${{ inputs.upload_artifacts }}'
