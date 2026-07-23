@@ -16,12 +16,16 @@ jobs:
     uses: ./.github/workflows/pr-title-lint.yml
 
   security:
+    # Only the title changes on an 'edited' event; the diff being scanned is
+    # unchanged, so skip re-running the code-scanning jobs on that event.
+    if: github.event.action != 'edited'
     uses: ./.github/workflows/security-scans.yml
 
   gemini-review:
     # Fork PRs can't mint the WIF OIDC token (no id-token access), so the
     # reusable workflow would fail to authenticate rather than just skip.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Also skip on 'edited' - only the title changes, not the diff being reviewed.
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.action != 'edited'
     permissions:
       contents: read
       issues: write

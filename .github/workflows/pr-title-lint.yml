@@ -32,6 +32,6 @@ jobs:
           if ! printf '%s' "$PR_TITLE" | grep -Eq "$PATTERN"; then
             echo "::error::PR title is not a valid Conventional Commit message: \"$PR_TITLE\""
             echo "Expected format: type(scope)?: description"
-            echo "Allowed types: $(echo "$ALLOWED_TYPES" | tr '|' ', ')"
+            echo "Allowed types: ${ALLOWED_TYPES//|/, }"
             exit 1
           fi
