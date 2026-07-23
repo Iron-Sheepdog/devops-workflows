@@ -17,9 +17,10 @@ duplicating CI/CD logic locally.
 
 ## Workflows
 
-| File                                  | Purpose                                                                                                                                                                                                         |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/gemini-review.yml` | Reusable PR code review using Google's `gemini-3.5-flash` (via `google-github-actions/run-gemini-cli@v0`). Authenticates to Vertex AI keylessly via Workload Identity Federation — no per-repo secret required. |
+| File                                    | Purpose                                                                                                                                                                                                         |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/gemini-review.yml`   | Reusable PR code review using Google's `gemini-3.5-flash` (via `google-github-actions/run-gemini-cli@v0`). Authenticates to Vertex AI keylessly via Workload Identity Federation — no per-repo secret required. |
+| `.github/workflows/pr-title-lint.yml`   | Reusable PR title lint — validates the PR title is a Conventional Commit message (needed by repos that squash-merge with `squash_merge_commit_title: PR_TITLE`, since release-please parses that title).       |
 
 ## Conventions
 

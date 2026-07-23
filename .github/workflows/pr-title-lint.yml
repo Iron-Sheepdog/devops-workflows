@@ -1,0 +1,37 @@
+name: PR Title Lint (Reusable)
+
+# Reusable workflow: call this from another repo/workflow via `uses:`. Validates
+# that the PR title is a Conventional Commit message. Repos that squash-merge PRs
+# with the PR title as the commit title (squash_merge_commit_title: PR_TITLE) rely
+# on this - the PR title is what actually lands on `main` and what release-please
+# parses to determine the next version bump and changelog entry.
+on:
+  workflow_call:
+    inputs:
+      allowed_types:
+        type: string
+        description: Pipe-separated list of allowed Conventional Commit types.
+        required: false
+        default: build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test
+
+jobs:
+  lint-title:
+    name: Validate PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Validate PR title is a Conventional Commit
+        env:
+          PR_TITLE: '${{ github.event.pull_request.title }}'
+          ALLOWED_TYPES: '${{ inputs.allowed_types }}'
+        run: |-
+          set -euo pipefail
+          PATTERN="^(${ALLOWED_TYPES})(\([a-zA-Z0-9_./-]+\))?!?: .+"
+          if ! printf '%s' "$PR_TITLE" | grep -Eq "$PATTERN"; then
+            echo "::error::PR title is not a valid Conventional Commit message: \"$PR_TITLE\""
+            echo "Expected format: type(scope)?: description"
+            echo "Allowed types: $(echo "$ALLOWED_TYPES" | tr '|' ', ')"
+            exit 1
+          fi

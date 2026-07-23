@@ -10,6 +10,7 @@ Instead of duplicating CI/CD logic in every application repository, common autom
 | -------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Deterministic Security Scans** | [`.github/workflows/security-scans.yml`](.github/workflows/security-scans.yml) | Runs [Gitleaks](https://github.com/gitleaks/gitleaks) (hardcoded-secret detection across the full git history) and [Trivy](https://github.com/aquasecurity/trivy) (dependency CVE scanning) in parallel. Hard, repeatable baselines for problems LLMs are unreliable at.                                                                                                  |
 | **Gemini Code Review**           | [`.github/workflows/gemini-review.yml`](.github/workflows/gemini-review.yml)   | Runs an automated code review on pull requests using the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action and the [code-review extension](https://github.com/gemini-cli-extensions/code-review). Findings are posted as inline PR review comments plus a summary, with severity levels (Critical → Low). |
+| **PR Title Lint**                | [`.github/workflows/pr-title-lint.yml`](.github/workflows/pr-title-lint.yml)   | Validates that the PR title is a Conventional Commit message. Needed by any repo that squash-merges with `squash_merge_commit_title: PR_TITLE`, since the PR title is what lands on `main` and what release-please parses for the next version bump. |
 
 ## 🚀 Usage — Hybrid Guardrails (recommended)
 
@@ -178,6 +179,36 @@ jobs:
 ```
 
 No secrets or API keys required — both tools run free. See [Optional inputs — Security Scans](#optional-inputs--security-scans) above.
+
+### PR Title Lint only
+
+```yaml
+name: PR Title Lint
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  lint-title:
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/pr-title-lint.yml@v2
+```
+
+Fails the check if the PR title isn't a valid Conventional Commit message (e.g. `feat(scope): summary`). Include `edited` in the trigger's `types:` — GitHub doesn't re-run status checks just because the title changed, so without it a title fixed after the fact never gets re-validated.
+
+#### Optional inputs — PR Title Lint
+
+| Input           | Default                                                                  | Description                                              |
+| --------------- | ------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `allowed_types` | `build\|chore\|ci\|docs\|feat\|fix\|perf\|refactor\|revert\|style\|test` | Pipe-separated list of allowed Conventional Commit types. |
+
+```yaml
+jobs:
+  lint-title:
+    uses: Iron-Sheepdog/devops-workflows/.github/workflows/pr-title-lint.yml@v2
+    with:
+      allowed_types: build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test|deps
+```
 
 ## 🏷️ Versioning
 

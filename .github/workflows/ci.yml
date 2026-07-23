@@ -1,17 +1,20 @@
 name: CI
 
-# Dogfoods our own reusable security scans and Gemini code review against this
-# repository on every PR, and serves as a live self-test of both workflows.
-# Uses the local copy on the PR branch (`./`) so changes are validated before
-# they're released.
+# Dogfoods our own reusable PR title lint, security scans, and Gemini code review
+# against this repository on every PR, and serves as a live self-test of all three
+# workflows. Uses the local copy on the PR branch (`./`) so changes are validated
+# before they're released.
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, edited, synchronize, reopened]
 
 permissions:
   contents: read
 
 jobs:
+  pr-title-lint:
+    uses: ./.github/workflows/pr-title-lint.yml
+
   security:
     uses: ./.github/workflows/security-scans.yml
 
