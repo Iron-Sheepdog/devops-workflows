@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.0.1...v2.1.0) (2026-07-23)
+
+
+### Features
+
+* **ci:** add reusable PR title lint workflow ([#33](https://github.com/Iron-Sheepdog/devops-workflows/issues/33)) ([269e15c](https://github.com/Iron-Sheepdog/devops-workflows/commit/269e15c7b5e19839509cae401e096734ecdf1c36))
+
 ## [2.0.1](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.0.0...v2.0.1) (2026-07-21)
 
 
