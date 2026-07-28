@@ -38,6 +38,13 @@ on:
           calls).
         required: false
         default: 100
+      timeout_minutes:
+        type: number
+        description:
+          Wall-clock minutes before the review job is cancelled. The job cost scales with the PR's existing comment/thread history (the standing thread-aware-dedup rules require fetching all threads,
+          including resolved ones, via the GitHub MCP server before posting), so long-lived PRs with several review rounds may need more than the default.
+        required: false
+        default: 7
       gcp_project_id:
         type: string
         description:
@@ -74,7 +81,7 @@ jobs:
   gemini-review:
     name: Gemini Code Review
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     permissions:
       contents: read
       issues: write
