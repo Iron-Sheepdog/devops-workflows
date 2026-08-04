@@ -8,9 +8,9 @@ Instead of duplicating CI/CD logic in every application repository, common autom
 
 | Workflow                         | File                                                                           | Description                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Deterministic Security Scans** | [`.github/workflows/security-scans.yml`](.github/workflows/security-scans.yml) | Runs [Gitleaks](https://github.com/gitleaks/gitleaks) (hardcoded-secret detection across the full git history) and [Trivy](https://github.com/aquasecurity/trivy) (dependency CVE scanning) in parallel. Hard, repeatable baselines for problems LLMs are unreliable at.                                                                                                  |
+| **Deterministic Security Scans** | [`.github/workflows/security-scans.yml`](.github/workflows/security-scans.yml) | Runs [Gitleaks](https://github.com/gitleaks/gitleaks) (hardcoded-secret detection — the PR's own commits on a pull request, the full history otherwise) and [Trivy](https://github.com/aquasecurity/trivy) (dependency CVE scanning) in parallel. Hard, repeatable baselines for problems LLMs are unreliable at.                                                         |
 | **Gemini Code Review**           | [`.github/workflows/gemini-review.yml`](.github/workflows/gemini-review.yml)   | Runs an automated code review on pull requests using the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action and the [code-review extension](https://github.com/gemini-cli-extensions/code-review). Findings are posted as inline PR review comments plus a summary, with severity levels (Critical → Low). |
-| **PR Title Lint**                | [`.github/workflows/pr-title-lint.yml`](.github/workflows/pr-title-lint.yml)   | Validates that the PR title is a Conventional Commit message. Needed by any repo that squash-merges with `squash_merge_commit_title: PR_TITLE`, since the PR title is what lands on `main` and what release-please parses for the next version bump. |
+| **PR Title Lint**                | [`.github/workflows/pr-title-lint.yml`](.github/workflows/pr-title-lint.yml)   | Validates that the PR title is a Conventional Commit message. Needed by any repo that squash-merges with `squash_merge_commit_title: PR_TITLE`, since the PR title is what lands on `main` and what release-please parses for the next version bump.                                                                                                                      |
 
 ## 🚀 Usage — Hybrid Guardrails (recommended)
 
@@ -72,17 +72,17 @@ For Dependabot, use `github.actor != 'dependabot[bot]'`. Both conditions can be 
 
 ### Optional inputs — Gemini Code Review
 
-| Input                            | Default             | Description                                                                                                                                         |
-| -------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `additional_context`             | _(empty)_           | Extra instructions for the review (e.g. `"Focus on security vulnerabilities"`).                                                                     |
-| `gemini_model`                   | `gemini-3.5-flash`  | Gemini model used for the review.                                                                                                                   |
-| `upload_artifacts`               | `false`             | Upload the Gemini CLI's `stdout.log`, `stderr.log`, and `telemetry.log` as a workflow artifact (`gemini-output`) for diagnostics.                   |
-| `gemini_debug`                   | `false`             | Enable Gemini CLI debug logging and stream responses to the job log. May expose sensitive content; turn on only when diagnosing issues.             |
+| Input                            | Default             | Description                                                                                                                                                                                                                                                                 |
+| -------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `additional_context`             | _(empty)_           | Extra instructions for the review (e.g. `"Focus on security vulnerabilities"`).                                                                                                                                                                                             |
+| `gemini_model`                   | `gemini-3.5-flash`  | Gemini model used for the review.                                                                                                                                                                                                                                           |
+| `upload_artifacts`               | `false`             | Upload the Gemini CLI's `stdout.log`, `stderr.log`, and `telemetry.log` as a workflow artifact (`gemini-output`) for diagnostics.                                                                                                                                           |
+| `gemini_debug`                   | `false`             | Enable Gemini CLI debug logging and stream responses to the job log. May expose sensitive content; turn on only when diagnosing issues.                                                                                                                                     |
 | `timeout_minutes`                | `7`                 | Wall-clock minutes before the review job is cancelled. Job cost scales with the PR's comment/thread history (thread-aware dedup fetches all threads, including resolved ones, before posting), so long-lived PRs with several review rounds may need more than the default. |
-| `gcp_project_id`                 | `iron-sheepdog-dev` | GCP project the review authenticates against via Workload Identity Federation. Use `isd-ai-innovation` for internal OpEx/analyst repos.             |
-| `gcp_location`                   | `global`            | GCP location for Vertex AI inference. `gemini-3.5-flash` requires the `global` endpoint — it isn't served on regional endpoints like `us-central1`. |
-| `gcp_workload_identity_provider` | _(empty)_           | Overrides the WIF provider to impersonate. Falls back to the caller's `VERTEX_WIF_PROVIDER` repository/organization variable if omitted.            |
-| `gcp_service_account`            | _(empty)_           | Overrides the service account to impersonate. Falls back to the caller's `VERTEX_REVIEW_SA` repository/organization variable if omitted.            |
+| `gcp_project_id`                 | `iron-sheepdog-dev` | GCP project the review authenticates against via Workload Identity Federation. Use `isd-ai-innovation` for internal OpEx/analyst repos.                                                                                                                                     |
+| `gcp_location`                   | `global`            | GCP location for Vertex AI inference. `gemini-3.5-flash` requires the `global` endpoint — it isn't served on regional endpoints like `us-central1`.                                                                                                                         |
+| `gcp_workload_identity_provider` | _(empty)_           | Overrides the WIF provider to impersonate. Falls back to the caller's `VERTEX_WIF_PROVIDER` repository/organization variable if omitted.                                                                                                                                    |
+| `gcp_service_account`            | _(empty)_           | Overrides the service account to impersonate. Falls back to the caller's `VERTEX_REVIEW_SA` repository/organization variable if omitted.                                                                                                                                    |
 
 Pass them via `with:` in the calling job:
 
@@ -96,15 +96,27 @@ jobs:
 
 ### Optional inputs — Security Scans
 
-| Input                | Default         | Description                                                                  |
-| -------------------- | --------------- | ---------------------------------------------------------------------------- |
-| `severity`           | `CRITICAL,HIGH` | Comma-separated Trivy severities to report.                                  |
-| `trivy_exit_code`    | `"0"`           | Trivy exit code on findings. `"0"` = report-only; `"1"` = fail the build.    |
-| `gitleaks_exit_code` | `"1"`           | Gitleaks exit code on findings. `"1"` = fail the build; `"0"` = report-only. |
-| `scan_ref`           | `.`             | Filesystem path Trivy scans.                                                 |
-| `node_version`       | `22.x`          | Node version used for environment context.                                   |
-| `run_gitleaks`       | `true`          | Toggle the Gitleaks job.                                                     |
-| `run_trivy`          | `true`          | Toggle the Trivy job.                                                        |
+| Input                   | Default         | Description                                                                  |
+| ----------------------- | --------------- | ---------------------------------------------------------------------------- |
+| `severity`              | `CRITICAL,HIGH` | Comma-separated Trivy severities to report.                                  |
+| `trivy_exit_code`       | `"0"`           | Trivy exit code on findings. `"0"` = report-only; `"1"` = fail the build.    |
+| `gitleaks_exit_code`    | `"1"`           | Gitleaks exit code on findings. `"1"` = fail the build; `"0"` = report-only. |
+| `scan_ref`              | `.`             | Filesystem path Trivy scans.                                                 |
+| `node_version`          | `22.x`          | Node version used for environment context.                                   |
+| `run_gitleaks`          | `true`          | Toggle the Gitleaks job.                                                     |
+| `run_trivy`             | `true`          | Toggle the Trivy job.                                                        |
+| `gitleaks_full_history` | `false`         | Scan the whole history even on a pull request. Non-PR events always do.      |
+
+### What Gitleaks scans
+
+On a `pull_request` event, Gitleaks scans **only the commits the PR adds** (`merge-base..head`, merges excluded). Every other event — `schedule`, `push`, `workflow_dispatch` — scans the full history, and a PR can opt into that with `gitleaks_full_history: true`.
+
+The reason is cost versus what the check actually tells you. On `react-app` (~30k commits reachable from GitHub refs) the full scan takes **8m24s** against a 10-minute timeout, and re-proves a fact about commits the PR never touched. Worse, a hit on an old commit blocks an author who cannot act on it: remediating a committed secret means rotating the credential and rewriting history, not editing the PR. Scoped to the PR's own commits the same scan takes well under a second, while still catching a secret that was added and then deleted within the branch — which a working-tree scan would miss.
+
+Full-history scanning keeps its own value, since newer Gitleaks releases ship rules that catch secrets older versions missed. That belongs on a schedule against the default branch, reporting to whoever owns security, rather than on the critical path of every pull request.
+
+> [!TIP]
+> GitHub's native [secret scanning with push protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-push-protection) is the stronger control where it is available, because it rejects the push before the secret ever enters history. Treat this job as the second layer, not the only one.
 
 ### How the Gemini review works
 
@@ -199,8 +211,8 @@ Fails the check if the PR title isn't a valid Conventional Commit message (e.g. 
 
 #### Optional inputs — PR Title Lint
 
-| Input           | Default                                                                  | Description                                              |
-| --------------- | ------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Input           | Default                                                                  | Description                                               |
+| --------------- | ------------------------------------------------------------------------ | --------------------------------------------------------- |
 | `allowed_types` | `build\|chore\|ci\|docs\|feat\|fix\|perf\|refactor\|revert\|style\|test` | Pipe-separated list of allowed Conventional Commit types. |
 
 ```yaml
