@@ -3,7 +3,7 @@ name: Deterministic Security Scans (Reusable)
 # Reusable workflow: call this from another repo/workflow via `uses:`. It runs two
 # deterministic security baselines in parallel against the caller's checked-out code:
 #
-#   * Gitleaks — scans the FULL git history for hardcoded secrets (API keys, tokens).
+#   * Gitleaks — scans git history for hardcoded secrets (API keys, tokens).
 #   * Trivy    — scans the filesystem (dependency manifests, etc.) for known CVEs.
 #
 # These complement the non-deterministic Gemini review (gemini-review.yml): hard,
@@ -12,6 +12,13 @@ name: Deterministic Security Scans (Reusable)
 # Notes:
 #   * We run the Gitleaks *CLI binary* (MIT, free) rather than gitleaks/gitleaks-action,
 #     because that action requires a paid license to scan repos owned by an organization.
+#   * On a pull_request event Gitleaks scans only the commits the PR adds. Re-scanning the
+#     whole history on every PR costs minutes on a large repo (8m24s over 30,764 commits in
+#     react-app, against a 10-minute timeout) to re-prove a fact about commits the PR never
+#     touched — and a hit on an old commit blocks an author who cannot fix it anyway, since
+#     remediation means rotating the credential and rewriting history. Full-history scanning
+#     still has value (newer Gitleaks rules catch secrets older versions missed), so it stays
+#     the default for every non-PR event and is available on PRs via `gitleaks_full_history`.
 #   * The Trivy action is pinned to a full commit SHA — trivy-action has been the target
 #     of supply-chain attacks via mutable tags, so `@master`/`@vX` are unsafe.
 on:
@@ -47,6 +54,13 @@ on:
         description: Run the Gitleaks secret-detection job.
         required: false
         default: true
+      gitleaks_full_history:
+        type: boolean
+        description: >-
+          Scan the entire git history even on a pull_request event. Off by default: PRs scan only their own commits. Non-PR events (schedule, push, workflow_dispatch) always scan the full history
+          regardless of this input.
+        required: false
+        default: false
       run_trivy:
         type: boolean
         description: Run the Trivy dependency CVE-scan job.
@@ -76,7 +90,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # ratchet:actions/checkout@v6
         with:
-          fetch-depth: 0 # Gitleaks needs the full history to detect previously committed secrets.
+          # Full history: needed to scan every commit on non-PR events, and on PRs to compute
+          # the merge base between the base and head branches.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install Gitleaks CLI
@@ -93,16 +109,53 @@ jobs:
           tar -xzf "${tarball}" gitleaks
           ./gitleaks version
 
+      - name: Resolve commit range to scan
+        id: scan-range
+        env:
+          FULL_HISTORY: '${{ inputs.gitleaks_full_history }}'
+          BASE_SHA: '${{ github.event.pull_request.base.sha }}'
+          HEAD_SHA: '${{ github.event.pull_request.head.sha }}'
+        run: |-
+          set -euo pipefail
+
+          # Empty log_opts means "scan everything" — the full-history default for any event
+          # that is not a pull_request, and for PRs when the caller opts in explicitly.
+          if [[ "${FULL_HISTORY}" == 'true' || -z "${BASE_SHA}" || -z "${HEAD_SHA}" ]]; then
+            echo 'log_opts=' >>"${GITHUB_OUTPUT}"
+            echo 'Scope: full git history.'
+            exit 0
+          fi
+
+          # `base.sha` is the base branch as of the PR event and drifts once the base branch
+          # advances, so diffing against it directly would re-scan unrelated commits. The
+          # merge base is the true fork point — the range below is exactly the PR's commits,
+          # and it stays correct across rebases and force-pushes.
+          if ! merge_base="$(git merge-base "${BASE_SHA}" "${HEAD_SHA}" 2>/dev/null)"; then
+            echo "::warning::Could not compute a merge base for ${BASE_SHA}...${HEAD_SHA}; falling back to a full-history scan."
+            echo 'log_opts=' >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # --no-merges: a merge commit reintroduces its parents' blobs, which would report
+          # the same secret once per merge that carries it forward.
+          echo "log_opts=--no-merges ${merge_base}..${HEAD_SHA}" >>"${GITHUB_OUTPUT}"
+          echo "Scope: $(git rev-list --count --no-merges "${merge_base}..${HEAD_SHA}") commit(s) in ${merge_base}..${HEAD_SHA}."
+
       - name: Scan git history for secrets
         env:
           EXIT_CODE: '${{ inputs.gitleaks_exit_code }}'
+          LOG_OPTS: '${{ steps.scan-range.outputs.log_opts }}'
         run: |-
           set -euo pipefail
-          ./gitleaks git . \
-            --redact \
-            --verbose \
-            --no-banner \
-            --exit-code "${EXIT_CODE}"
+
+          args=(git . --redact --verbose --no-banner --exit-code "${EXIT_CODE}")
+          # Only pass --log-opts when scoped: an empty value reaches `git log` as an empty
+          # argument, which it rejects as an ambiguous revision.
+          if [[ -n "${LOG_OPTS}" ]]; then
+            args+=(--log-opts "${LOG_OPTS}")
+          fi
+
+          ./gitleaks "${args[@]}"
 
   trivy:
     name: Dependency CVE Scan (Trivy)
