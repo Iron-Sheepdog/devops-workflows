@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.2.1](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.0...v2.2.1) (2026-08-05)
+
+
+### Bug Fixes
+
+* **release-please:** make ci-type commits releasable ([#38](https://github.com/Iron-Sheepdog/devops-workflows/issues/38)) ([607f6f9](https://github.com/Iron-Sheepdog/devops-workflows/commit/607f6f9187475a114014d8e919537011aa423253))
+
+
+### Continuous Integration
+
+* **security-scans:** scan only the PR's commits with Gitleaks ([#37](https://github.com/Iron-Sheepdog/devops-workflows/issues/37)) ([c086279](https://github.com/Iron-Sheepdog/devops-workflows/commit/c0862799ff328dea3cf689225bb238e14bcf35fd))
+
 ## [2.2.0](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.1.0...v2.2.0) (2026-07-28)
 
 
