@@ -44,7 +44,7 @@ on:
           Wall-clock minutes before the review job is cancelled. The job cost scales with the PR's existing comment/thread history (the standing thread-aware-dedup rules require fetching all threads,
           including resolved ones, via the GitHub MCP server before posting), so long-lived PRs with several review rounds may need more than the default.
         required: false
-        default: 7
+        default: 10
       gcp_project_id:
         type: string
         description:
