@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.2](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.1...v2.2.2) (2026-08-07)
+
+
+### Continuous Integration
+
+* **gemini-review:** raise default timeout_minutes to 10 ([#40](https://github.com/Iron-Sheepdog/devops-workflows/issues/40)) ([942e7bc](https://github.com/Iron-Sheepdog/devops-workflows/commit/942e7bcd2e2a93cf2b5597d1da1e94c45ca207fc))
+
 ## [2.2.1](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.0...v2.2.1) (2026-08-05)
 
 
