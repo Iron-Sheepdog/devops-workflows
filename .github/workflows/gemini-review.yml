@@ -41,10 +41,10 @@ on:
       timeout_minutes:
         type: number
         description:
-          Wall-clock minutes before the review job is cancelled. The job cost scales with the PR's existing comment/thread history (the standing thread-aware-dedup rules require fetching all threads,
-          including resolved ones, via the GitHub MCP server before posting), so long-lived PRs with several review rounds may need more than the default.
+          Wall-clock minutes before the review job is cancelled. The Gemini step gets two minutes less, so a review that runs long still posts the comments it drafted as a partial review. On a 38-file,
+          7,400-line PR the review job took up to 11 minutes in testing, so the default leaves headroom above that; small PRs finish in a few minutes either way.
         required: false
-        default: 10
+        default: 15
       gcp_project_id:
         type: string
         description:
@@ -93,46 +93,313 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Prepare prompt context
+      # Put the pull request in the prompt instead of leaving it to tool calls.
+      # Gemini CLI keeps only the newest ~50,000 tokens of tool output in context
+      # and replaces older results with a short stub (not configurable), so on a
+      # large PR the model read the diff, lost it a few turns later, and spent
+      # most of its turns re-reading changed files. Files referenced as @path in
+      # a plain (non-slash-command) prompt are inlined into the prompt itself,
+      # which is never masked.
+      #
+      # - pull-request.md: title, author, branches and description.
+      # - threads.md: existing review threads. pull_request_read get_reviews and
+      #   get_comments always fail with GitHub MCP v0.27.0 (their structuredContent
+      #   is an array, which Gemini CLI's MCP client rejects), and a masked thread
+      #   list sent the model grepping its own saved tool output.
+      # - part-NN.diff: the diff in parts of at most 1,500 lines (read_many_files
+      #   cuts a file at 2,000). Each hunk line is prefixed with its line number
+      #   (R<n> in the new file, L<n> in the old one) and a "|", so a comment
+      #   doesn't need a source re-read to find its line. The diff marker always
+      #   comes right after the "|", so a context line whose code starts with
+      #   "-" or "+" (a Markdown or YAML list item) doesn't look like a change.
+      # A diff over MAX_INLINE_CHARS stays on disk for the model to read in parts.
+      - name: Save the pull request for the prompt
+        id: save_pr
         run: |-
-          mkdir -p .gemini
+          # Start from an empty directory, so files the PR itself commits under
+          # .pr-review/ aren't read as review input.
+          rm -rf "${PR_DIR}"
+          mkdir -p "${PR_DIR}/files"
 
-          # Standing process rules appended to every review, so review rounds
-          # converge instead of re-reviewing the whole PR from scratch each push.
-          # See https://github.com/Iron-Sheepdog/devops-workflows/issues/22.
-          STANDING_INSTRUCTIONS=$'Follow these review-process rules on every run, in addition to the usual code review:\n\n1. Thread-aware dedup: before posting any inline comment, fetch the PR\'s existing review threads via the GitHub MCP server, including resolved ones. Never re-post a suggestion that duplicates an existing thread. If you want to re-raise a point from a resolved or declined thread with new evidence, reply on that existing thread instead of opening a new one.\n2. Single evolving summary: your summary comment must start with the exact marker line `<!-- gemini-review-summary -->` on its own line. Before posting, check whether a PR issue comment already contains this marker. If one exists, update that comment in place instead of posting a new comment.\n3. Severity floor for inline threads: only open inline review threads for MEDIUM severity and above. Roll LOW-severity observations into the summary comment as a bullet list instead of inline threads.\n4. Convergence rule: if the diff since the last reviewed commit only addresses prior review feedback and all previous threads are resolved, do not hunt for new nits - update the summary comment to end in "LGTM :+1:" instead.\n\nWhen the diff has no issues worth raising as inline comments, end the summary comment with a final line that reads exactly "LGTM :+1:".'
-
-          if [ -n "${ADDITIONAL_CONTEXT}" ]; then
-            REVIEW_CONTEXT=$(printf "%s\n\n%s" "${ADDITIONAL_CONTEXT}" "${STANDING_INSTRUCTIONS}")
-          else
-            REVIEW_CONTEXT="${STANDING_INSTRUCTIONS}"
+          if ! gh pr view "${PULL_REQUEST_NUMBER}" --repo "${REPOSITORY}" --json title,author,baseRefName,headRefName,body \
+            --jq '"# \(.title)\n\nAuthor: \(.author.login). Merges \(.headRefName) into \(.baseRefName).\n\n\(.body)"' > "${PR_DIR}/pull-request.md"; then
+            echo "The pull request description couldn't be loaded." > "${PR_DIR}/pull-request.md"
           fi
 
-          {
-            echo 'REVIEW_CONTEXT<<GEMINI_CONTEXT_EOF'
-            printf '%s\n' "${REVIEW_CONTEXT}"
-            echo 'GEMINI_CONTEXT_EOF'
-          } >> "${GITHUB_ENV}"
+          # All threads, 100 per page. --paginate runs the --jq filter on each
+          # page, so it prints one entry per thread. A thread's comments past
+          # the first 10 are counted but not listed.
+          threads_query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+            repository(owner: $owner, name: $name) {
+              pullRequest(number: $number) {
+                reviewThreads(first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    isResolved
+                    isOutdated
+                    path
+                    line
+                    originalLine
+                    comments(first: 10) { totalCount nodes { author { login } body } }
+                  }
+                }
+              }
+            }
+          }'
+          if gh api graphql --paginate -f query="${threads_query}" -f owner="${REPOSITORY%%/*}" -f name="${REPOSITORY#*/}" -F number="${PULL_REQUEST_NUMBER}" \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+              | "- \(.path):\(.line // .originalLine // "?") [\(if .isResolved then "resolved" else "open" end)\(if .isOutdated then ", outdated" else "" end)]\n"
+                + (.comments.nodes | map("  - \(.author.login // "ghost"): \(.body | gsub("\\s+"; " ") | .[0:500])") | join("\n"))
+                + (.comments.totalCount - (.comments.nodes | length) | if . > 0 then "\n  - (\(.) later comments not shown)" else "" end)' \
+            > "${PR_DIR}/threads.md"; then
+            [ -s "${PR_DIR}/threads.md" ] || echo "There are no review threads yet." > "${PR_DIR}/threads.md"
+          else
+            echo "The existing review threads couldn't be loaded. Fetch them with pull_request_read method get_review_comments." > "${PR_DIR}/threads.md"
+          fi
 
-          jq -n \
-            --arg repo "${REPOSITORY}" \
-            --arg pr "${PULL_REQUEST_NUMBER}" \
-            --arg context "${REVIEW_CONTEXT}" \
-            '{repository: $repo, pull_request_number: $pr, additional_context: $context}' > .gemini/context.json
+          # GitHub refuses the diff of a PR over 20,000 lines or 300 files. Rebuild
+          # it from the per-file patches instead (up to 3,000 files). The model
+          # can't page through them itself: pull_request_read get_files has the
+          # same array structuredContent bug as get_reviews.
+          if ! gh pr diff "${PULL_REQUEST_NUMBER}" --repo "${REPOSITORY}" > "${PR_DIR}/pr.diff"; then
+            echo "::warning::GitHub refused the PR diff (over 20,000 lines or 300 files). Rebuilding it from the per-file patches."
+            if ! gh api --paginate "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/files?per_page=100" \
+              --jq '.[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n--- a/\(.previous_filename // .filename)\n+++ b/\(.filename)\n\(.patch // "(GitHub omits the patch for this file: it is binary or too large.)")"' \
+              > "${PR_DIR}/pr.diff"; then
+              echo "::warning::Could not load the PR's changed files either. The review will say so instead of reviewing."
+              echo "mode=unavailable" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          fi
+
+          # One numbered diff per changed file.
+          awk -v dir="${PR_DIR}/files" '
+            /^diff --git / {
+              if (out) close(out)
+              out = sprintf("%s/%04d.diff", dir, ++n)
+              in_hunk = 0
+            }
+            !out { next }
+            /^@@ / {
+              # @@ -<old start>[,<count>] +<new start>[,<count>] @@
+              split($2, old_range, ","); old_line = -old_range[1]
+              split($3, new_range, ","); new_line = new_range[1] + 0
+              in_hunk = 1
+              print > out
+              next
+            }
+            !in_hunk { print > out; next }
+            /^\+/ { printf "R%-5d|%s\n", new_line++, $0 > out; next }
+            /^-/ { printf "L%-5d|%s\n", old_line++, $0 > out; next }
+            /^ / { printf "R%-5d|%s\n", new_line++, $0 > out; old_line++; next }
+            { print > out }
+          ' "${PR_DIR}/pr.diff"
+
+          # Bundle the per-file diffs into parts, starting a new part when the
+          # next file would push it over MAX_PART_LINES. A file longer than
+          # that is split across parts of its own; the next file may share the
+          # last of them.
+          index_file="${PR_DIR}/index.txt"
+          printf 'Changed files, with the diff part that holds each one and its lines added/removed:\n' > "${index_file}"
+          part=0
+          part_lines=0
+          part_file=''
+          start_part() {
+            part=$(( part + 1 ))
+            part_lines=0
+            part_file=$(printf '%s/part-%02d.diff' "${PR_DIR}" "${part}")
+          }
+          for f in "${PR_DIR}"/files/*.diff; do
+            [ -e "${f}" ] || continue
+            lines=$(wc -l < "${f}")
+            header=$(head -n 1 "${f}")
+            counts=$(awk '/^R[0-9]+ *[|][+]/ { a++ } /^L[0-9]+ *[|]-/ { d++ } END { printf "+%d/-%d", a, d }' "${f}")
+            if [ "${lines}" -gt "${MAX_PART_LINES}" ]; then
+              split -l "${MAX_PART_LINES}" -d -a 3 "${f}" "${f}.chunk-"
+              for chunk in "${f}".chunk-*; do
+                start_part
+                cp "${chunk}" "${part_file}"
+                part_lines=$(wc -l < "${chunk}")
+                printf '%s\t%s\t%s (split across parts)\n' "${part_file}" "${counts}" "${header##* b/}" >> "${index_file}"
+              done
+              continue
+            fi
+            if [ "${part}" -eq 0 ] || [ $(( part_lines + lines )) -gt "${MAX_PART_LINES}" ]; then
+              start_part
+            fi
+            cat "${f}" >> "${part_file}"
+            part_lines=$(( part_lines + lines ))
+            printf '%s\t%s\t%s\n' "${part_file}" "${counts}" "${header##* b/}" >> "${index_file}"
+          done
+          rm -rf "${PR_DIR}/files" "${PR_DIR}/pr.diff"
+          cat "${index_file}"
+
+          parts=''
+          total_chars=0
+          if [ "${part}" -gt 0 ]; then
+            parts=$(cd "${PR_DIR}" && echo part-*.diff)
+            total_chars=$(cat "${PR_DIR}"/part-*.diff | wc -c)
+          fi
+          if [ "${total_chars}" -le "${MAX_INLINE_CHARS}" ]; then
+            mode=inline
+          else
+            mode=read
+          fi
+          echo "Diff: ${part} part(s), ${total_chars} characters, mode ${mode}."
+          {
+            echo "mode=${mode}"
+            echo "parts=${parts}"
+            echo "total_chars=${total_chars}"
+          } >> "${GITHUB_OUTPUT}"
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          REPOSITORY: '${{ github.repository }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          PR_DIR: .pr-review
+          MAX_PART_LINES: 1500
+          # ~125k tokens. Past this the per-turn cost of carrying the diff
+          # outweighs the turns it saves.
+          MAX_INLINE_CHARS: 500000
+
+      - name: Prepare prompt
+        id: prepare
+        run: |-
+          # Stop the Gemini step two minutes before the job timeout. The step's
+          # timer starts with the step, so the steps before it and the
+          # partial-review step after it share those two minutes. If the job
+          # timeout fires first, the job is cancelled and the partial review is
+          # skipped.
+          echo "gemini_timeout_minutes=$(( TIMEOUT_MINUTES > 3 ? TIMEOUT_MINUTES - 2 : TIMEOUT_MINUTES ))" >> "${GITHUB_OUTPUT}"
+
+          # The prompt replaces the code-review extension's /pr-code-review
+          # command, which fetches the diff with a tool call and so can't take
+          # it inline. The extension stays installed for its code-review-commons
+          # skill (persona, criteria, severity guide), and the submit steps and
+          # summary format below follow its command.
+          #
+          # The process rules make review rounds converge instead of re-reviewing
+          # the whole PR from scratch each push
+          # (https://github.com/Iron-Sheepdog/devops-workflows/issues/22). Every
+          # rule must be doable with the tools enabled in the settings below.
+          #
+          # Text outside the @path references must not contain an unescaped "@",
+          # which Gemini CLI would read as a file reference.
+          header="Review pull request https://github.com/${REPOSITORY}/pull/${PULL_REQUEST_NUMBER} (repository ${REPOSITORY}, pull request number ${PULL_REQUEST_NUMBER})."
+
+          rules=$(cat <<'GEMINI_RULES_EOF'
+          First activate the `code-review-commons` skill, and follow its persona, instructions and critical constraints throughout. The pull request is included at the end of this prompt, so you don't need to fetch it.
+
+          How to work:
+
+          - You have at most __MAX_SESSION_TURNS__ model turns. A turn can hold several tool calls, so make independent calls in the same turn.
+          - In your first turn, together with activating the skill, create the pending review with `pull_request_review_write` method `create`.
+          - Each line inside a diff hunk starts with its line number and a `|`. `R236` is line 236 of the new file (comment with side RIGHT and line 236), and `L45` is line 45 of the old file (side LEFT). The character right after the `|` is the diff marker: `+` for an added line, `-` for a removed line, a space for an unchanged line. Use these numbers for comments instead of reading files to find a line.
+          - Read other repository files only when a finding depends on code outside the diff. Read a whole file in one call rather than in slices, and read several files in the same turn.
+          - Add each inline comment with `add_comment_to_pending_review` as soon as you've settled on it, several per turn. Comments added before a run is cut off are still posted, as a partial review.
+          - Submit the review with `pull_request_review_write` method `submit_pending` and event `COMMENT`. Never use `APPROVE` or `REQUEST_CHANGES`.
+
+          What this job can't do:
+
+          - Dependencies aren't installed, so `node_modules` doesn't exist. Don't search or read it; judge library usage from the diff and the repository's own code.
+          - Reads of `.env` files and of paths outside the repository are blocked. A changed `.env` file is already in the diff.
+          - There's no shell and no web access. The only GitHub tools are `pull_request_read`, `pull_request_review_write` and `add_comment_to_pending_review`. `pull_request_read` methods `get_reviews` and `get_comments` always fail in this job. You can't reply on an existing thread or edit an earlier comment or summary.
+
+          Review rules:
+
+          1. Thread-aware dedup: the existing review threads are listed below. Never add a comment that duplicates one, resolved or not. If you want to re-raise a point from a resolved or declined thread with new evidence, say so in the summary and name the file and line instead of opening a new thread.
+          2. Severity floor: only add inline comments for MEDIUM severity and above. Put LOW-severity observations in the summary as a bullet list instead.
+          3. Convergence rule: if the existing threads show the latest changes only address earlier review feedback and all of those threads are resolved, don't hunt for new nits; submit a short summary that ends in "LGTM :+1:".
+
+          Inline comments:
+
+          - Comment only on added or removed lines: those with a + or - right after the `|`. Line numbers and the indentation of code suggestions must match the code exactly.
+          - Start each comment body with the severity in brackets, for example `[HIGH] The listener is never removed...`. When you have a concrete fix, follow the text with a ```suggestion block holding the replacement code, without the line numbers, the `|` or the +/- markers.
+
+          Summary (the body you submit the review with), in exactly this format:
+
+          <!-- gemini-review-summary -->
+          ## 📋 Review Summary
+
+          A brief, high-level assessment of the pull request's objective and quality, in 2-3 sentences.
+
+          ## 🔍 General Feedback
+
+          - A bulleted list of general observations, positive highlights, recurring patterns and LOW-severity findings. Don't repeat the inline comments.
+
+          When the diff has no issues worth raising as inline comments, end the summary with a final line that reads exactly "LGTM :+1:".
+          GEMINI_RULES_EOF
+          )
+          rules="${rules//__MAX_SESSION_TURNS__/${MAX_SESSION_TURNS}}"
+
+          context=''
+          if [ -n "${ADDITIONAL_CONTEXT}" ]; then
+            context=$(printf 'Additional instructions for this repository:\n\n%s' "${ADDITIONAL_CONTEXT//@/\\@}")
+          fi
+
+          refs="@${PR_DIR}/pull-request.md @${PR_DIR}/threads.md"
+          case "${DIFF_MODE}" in
+            inline)
+              pr_section="The pull request follows: its description, the existing review threads, an index of the changed files, and the full diff in parts. Don't fetch the diff again or read changed files to see what changed."
+              refs="${refs} @${PR_DIR}/index.txt"
+              for part in ${DIFF_PARTS}; do
+                refs="${refs} @${PR_DIR}/${part}"
+              done
+              ;;
+            read)
+              pr_section="The diff is too large to include here (${TOTAL_CHARS} characters). It is saved in parts under \`${PR_DIR}/\`, and the index below lists the files in each part. Read the parts in order with \`read_file\`, one per turn, and add each part's inline comments before reading the next: older tool output drops out of your context after a few turns. Skip lockfile changes such as \`yarn.lock\` and \`package-lock.json\`."
+              refs="${refs} @${PR_DIR}/index.txt"
+              ;;
+            *)
+              pr_section="The diff of this pull request couldn't be loaded for this run. Don't try to fetch it. Submit the review without inline comments, with a summary that says the diff couldn't be loaded and the pull request wasn't reviewed."
+              ;;
+          esac
+
+          prompt=$(printf '%s\n\n%s\n\n%s\n\n%s\n\n%s\n' "${header}" "${rules}" "${context}" "${pr_section}" "${refs}")
+          {
+            echo 'prompt<<GEMINI_PROMPT_EOF'
+            printf '%s\n' "${prompt}"
+            echo 'GEMINI_PROMPT_EOF'
+          } >> "${GITHUB_OUTPUT}"
         env:
           REPOSITORY: '${{ github.repository }}'
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
           ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
+          MAX_SESSION_TURNS: '${{ inputs.max_session_turns }}'
+          TIMEOUT_MINUTES: '${{ inputs.timeout_minutes }}'
+          PR_DIR: .pr-review
+          DIFF_MODE: '${{ steps.save_pr.outputs.mode }}'
+          DIFF_PARTS: '${{ steps.save_pr.outputs.parts }}'
+          TOTAL_CHARS: '${{ steps.save_pr.outputs.total_chars }}'
+
+      # A run that was cancelled (by a newer push, the job timeout or a lost
+      # runner) can leave its pending review behind, since the partial-review
+      # step doesn't run then. GitHub allows one pending review per user on a
+      # pull request, so this run's `create` would fail and its comments would
+      # be added to the old review. A failure here shouldn't stop the review.
+      - name: Delete a pending review left by an earlier run
+        continue-on-error: true
+        run: |-
+          reviews_path="repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews"
+
+          # GitHub returns a pending review only to its author, so any pending
+          # review listed here is one this token drafted.
+          review_ids=$(gh api --paginate "${reviews_path}" --jq '.[] | select(.state == "PENDING") | .id')
+          for review_id in ${review_ids}; do
+            gh api -X DELETE "${reviews_path}/${review_id}" > /dev/null
+            echo "Deleted pending review ${review_id}, left by an earlier run."
+          done
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          REPOSITORY: '${{ github.repository }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
 
       - name: Run Gemini pull request review
         uses: google-github-actions/run-gemini-cli@v0 # ratchet:exclude
         id: gemini_pr_review
+        timeout-minutes: ${{ fromJSON(steps.prepare.outputs.gemini_timeout_minutes) }}
         env:
           GEMINI_CLI_TRUST_WORKSPACE: 'true'
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
-          REPOSITORY: '${{ github.repository }}'
-          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
-          ADDITIONAL_CONTEXT: '${{ env.REVIEW_CONTEXT }}'
         with:
           use_vertex_ai: true
           gcp_project_id: '${{ inputs.gcp_project_id }}'
@@ -145,10 +412,33 @@ jobs:
           upload_artifacts: '${{ inputs.upload_artifacts }}'
           workflow_name: gemini-review
           github_pr_number: '${{ github.event.pull_request.number }}'
+          # Tool settings, which keep large PRs inside max_session_turns:
+          # - tools.exclude: the shell is denied by policy in this job anyway, and
+          #   a reviewer has no use for web access, file writes or update_topic
+          #   (progress narration nobody reads in CI). Excluded tools aren't
+          #   offered to the model, so it doesn't spend turns trying them.
+          # - truncateToolOutputThreshold (default 40,000 chars): above it, an MCP
+          #   result is cut to its first 20% and last 80%, with the rest saved to
+          #   a temp file the model then has to page through. 400,000 chars (Gemini
+          #   CLI also caps it by the context left) lets large results, such as
+          #   the files the model reads, come back whole.
+          # - includeTools: only the GitHub MCP tools the review uses (as in the
+          #   upstream pr-review example), instead of ~40 including write tools.
           settings: |-
             {
               "model": {
                 "maxSessionTurns": ${{ inputs.max_session_turns }}
+              },
+              "tools": {
+                "exclude": [
+                  "run_shell_command",
+                  "web_fetch",
+                  "google_web_search",
+                  "write_file",
+                  "replace",
+                  "update_topic"
+                ],
+                "truncateToolOutputThreshold": 400000
               },
               "telemetry": {
                 "enabled": true,
@@ -166,6 +456,11 @@ jobs:
                     "GITHUB_PERSONAL_ACCESS_TOKEN",
                     "ghcr.io/github/github-mcp-server:v0.27.0"
                   ],
+                  "includeTools": [
+                    "pull_request_read",
+                    "pull_request_review_write",
+                    "add_comment_to_pending_review"
+                  ],
                   "env": {
                     "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
                   }
@@ -179,4 +474,41 @@ jobs:
             [
               "https://github.com/gemini-cli-extensions/code-review"
             ]
-          prompt: '/pr-code-review https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number || github.event.issue.number }}'
+          prompt: '${{ steps.prepare.outputs.prompt }}'
+
+      # The code-review extension adds inline comments to a pending review and
+      # submits it only at the end, so a run that stops early (for example with
+      # FatalTurnLimitedError) used to leave every drafted comment unpublished.
+      # Submit what it drafted, marked as partial. The job still fails.
+      - name: Submit partial review
+        if: failure() && steps.gemini_pr_review.outcome == 'failure'
+        run: |-
+          reviews_path="repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews"
+
+          # GitHub returns a pending review only to its author, so any pending
+          # review listed here is the one this token drafted.
+          review_id=$(gh api --paginate "${reviews_path}" \
+            --jq '.[] | select(.state == "PENDING") | .id' | awk 'NR == 1')
+          if [ -z "${review_id}" ]; then
+            echo "No pending review to submit."
+            exit 0
+          fi
+
+          comment_count=$(gh api --paginate "${reviews_path}/${review_id}/comments" --jq '.[].id' | wc -l)
+          if [ "${comment_count}" -eq 0 ]; then
+            gh api -X DELETE "${reviews_path}/${review_id}" > /dev/null
+            echo "Deleted an empty pending review."
+            exit 0
+          fi
+
+          body=$(printf '%s\n%s\n\n%s\n' \
+            '<!-- gemini-review-summary -->' \
+            '## 📋 Review Summary (partial)' \
+            "The Gemini review stopped before it finished ([run log](${RUN_URL})). It had drafted the ${comment_count} inline comment(s) below; files it hadn't reached were not reviewed.")
+          gh api -X POST "${reviews_path}/${review_id}/events" -f event=COMMENT -f body="${body}" > /dev/null
+          echo "Submitted a partial review with ${comment_count} inline comment(s)."
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          REPOSITORY: '${{ github.repository }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          RUN_URL: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
