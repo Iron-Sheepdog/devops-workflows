@@ -116,6 +116,9 @@ jobs:
       - name: Save the pull request for the prompt
         id: save_pr
         run: |-
+          # Start from an empty directory, so files the PR itself commits under
+          # .pr-review/ aren't read as review input.
+          rm -rf "${PR_DIR}"
           mkdir -p "${PR_DIR}/files"
 
           if ! gh pr view "${PULL_REQUEST_NUMBER}" --repo "${REPOSITORY}" --json title,author,baseRefName,headRefName,body \
@@ -123,29 +126,34 @@ jobs:
             echo "The pull request description couldn't be loaded." > "${PR_DIR}/pull-request.md"
           fi
 
-          threads_query='query($owner: String!, $name: String!, $number: Int!) {
+          # All threads, 100 per page. --paginate runs the --jq filter on each
+          # page, so it prints one entry per thread. A thread's comments past
+          # the first 10 are counted but not listed.
+          threads_query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
             repository(owner: $owner, name: $name) {
               pullRequest(number: $number) {
-                reviewThreads(first: 100) {
+                reviewThreads(first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
                   nodes {
                     isResolved
                     isOutdated
                     path
                     line
                     originalLine
-                    comments(first: 10) { nodes { author { login } body } }
+                    comments(first: 10) { totalCount nodes { author { login } body } }
                   }
                 }
               }
             }
           }'
-          if ! gh api graphql -f query="${threads_query}" -f owner="${REPOSITORY%%/*}" -f name="${REPOSITORY#*/}" -F number="${PULL_REQUEST_NUMBER}" \
-            --jq '.data.repository.pullRequest.reviewThreads.nodes
-              | if length == 0 then "There are no review threads yet."
-                else map("- \(.path):\(.line // .originalLine // "?") [\(if .isResolved then "resolved" else "open" end)\(if .isOutdated then ", outdated" else "" end)]\n"
-                    + (.comments.nodes | map("  - \(.author.login // "ghost"): \(.body | gsub("\\s+"; " ") | .[0:500])") | join("\n")))
-                  | join("\n")
-                end' > "${PR_DIR}/threads.md"; then
+          if gh api graphql --paginate -f query="${threads_query}" -f owner="${REPOSITORY%%/*}" -f name="${REPOSITORY#*/}" -F number="${PULL_REQUEST_NUMBER}" \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+              | "- \(.path):\(.line // .originalLine // "?") [\(if .isResolved then "resolved" else "open" end)\(if .isOutdated then ", outdated" else "" end)]\n"
+                + (.comments.nodes | map("  - \(.author.login // "ghost"): \(.body | gsub("\\s+"; " ") | .[0:500])") | join("\n"))
+                + (.comments.totalCount - (.comments.nodes | length) | if . > 0 then "\n  - (\(.) later comments not shown)" else "" end)' \
+            > "${PR_DIR}/threads.md"; then
+            [ -s "${PR_DIR}/threads.md" ] || echo "There are no review threads yet." > "${PR_DIR}/threads.md"
+          else
             echo "The existing review threads couldn't be loaded. Fetch them with pull_request_read method get_review_comments." > "${PR_DIR}/threads.md"
           fi
 
