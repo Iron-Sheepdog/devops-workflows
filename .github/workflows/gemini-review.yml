@@ -107,9 +107,11 @@ jobs:
       #   is an array, which Gemini CLI's MCP client rejects), and a masked thread
       #   list sent the model grepping its own saved tool output.
       # - part-NN.diff: the diff in parts of at most 1,500 lines (read_many_files
-      #   cuts a file at 2,000), each hunk line prefixed with its line number
-      #   (R<n> in the new file, L<n> in the old one) so a comment doesn't need a
-      #   source re-read to find its line.
+      #   cuts a file at 2,000). Each hunk line is prefixed with its line number
+      #   (R<n> in the new file, L<n> in the old one) and a "|", so a comment
+      #   doesn't need a source re-read to find its line. The diff marker always
+      #   comes right after the "|", so a context line whose code starts with
+      #   "-" or "+" (a Markdown or YAML list item) doesn't look like a change.
       # A diff over MAX_INLINE_CHARS stays on disk for the model to read in parts.
       - name: Save the pull request for the prompt
         id: save_pr
@@ -179,9 +181,9 @@ jobs:
               next
             }
             !in_hunk { print > out; next }
-            /^\+/ { printf "R%-5d %s\n", new_line++, $0 > out; next }
-            /^-/ { printf "L%-5d %s\n", old_line++, $0 > out; next }
-            /^ / { printf "R%-5d %s\n", new_line++, $0 > out; old_line++; next }
+            /^\+/ { printf "R%-5d|%s\n", new_line++, $0 > out; next }
+            /^-/ { printf "L%-5d|%s\n", old_line++, $0 > out; next }
+            /^ / { printf "R%-5d|%s\n", new_line++, $0 > out; old_line++; next }
             { print > out }
           ' "${PR_DIR}/pr.diff"
 
@@ -203,7 +205,7 @@ jobs:
             [ -e "${f}" ] || continue
             lines=$(wc -l < "${f}")
             header=$(head -n 1 "${f}")
-            counts=$(awk '/^R[0-9]+ +\+/ { a++ } /^L[0-9]+ +-/ { d++ } END { printf "+%d/-%d", a, d }' "${f}")
+            counts=$(awk '/^R[0-9]+ *[|][+]/ { a++ } /^L[0-9]+ *[|]-/ { d++ } END { printf "+%d/-%d", a, d }' "${f}")
             if [ "${lines}" -gt "${MAX_PART_LINES}" ]; then
               split -l "${MAX_PART_LINES}" -d -a 3 "${f}" "${f}.chunk-"
               for chunk in "${f}".chunk-*; do
@@ -280,7 +282,7 @@ jobs:
 
           - You have at most __MAX_SESSION_TURNS__ model turns. A turn can hold several tool calls, so make independent calls in the same turn.
           - In your first turn, together with activating the skill, create the pending review with `pull_request_review_write` method `create`.
-          - Each line inside a diff hunk starts with its line number. `R236` is line 236 of the new file (comment with side RIGHT and line 236), and `L45` is line 45 of the old file (side LEFT). Use these numbers for comments instead of reading files to find a line.
+          - Each line inside a diff hunk starts with its line number and a `|`. `R236` is line 236 of the new file (comment with side RIGHT and line 236), and `L45` is line 45 of the old file (side LEFT). The character right after the `|` is the diff marker: `+` for an added line, `-` for a removed line, a space for an unchanged line. Use these numbers for comments instead of reading files to find a line.
           - Read other repository files only when a finding depends on code outside the diff. Read a whole file in one call rather than in slices, and read several files in the same turn.
           - Add each inline comment with `add_comment_to_pending_review` as soon as you've settled on it, several per turn. Comments added before a run is cut off are still posted, as a partial review.
           - Submit the review with `pull_request_review_write` method `submit_pending` and event `COMMENT`. Never use `APPROVE` or `REQUEST_CHANGES`.
@@ -299,8 +301,8 @@ jobs:
 
           Inline comments:
 
-          - Comment only on added or removed lines: those with a + or - right after the line number. Line numbers and the indentation of code suggestions must match the code exactly.
-          - Start each comment body with the severity in brackets, for example `[HIGH] The listener is never removed...`. When you have a concrete fix, follow the text with a ```suggestion block holding the replacement code, without the R/L line numbers or the +/- markers.
+          - Comment only on added or removed lines: those with a + or - right after the `|`. Line numbers and the indentation of code suggestions must match the code exactly.
+          - Start each comment body with the severity in brackets, for example `[HIGH] The listener is never removed...`. When you have a concrete fix, follow the text with a ```suggestion block holding the replacement code, without the line numbers, the `|` or the +/- markers.
 
           Summary (the body you submit the review with), in exactly this format:
 

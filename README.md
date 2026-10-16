@@ -172,7 +172,8 @@ calls that could not work in this job. The workflow now prevents that:
   300 files, so for those the step rebuilds it from the per-file patches (up to 3,000 files).
   `pull_request_read` `get_files` isn't an option: it has the same array bug as `get_reviews`.
 - **Diff lines carry their line numbers.** Each hunk line in the saved diff starts with `R<n>`
-  (line in the new file) or `L<n>` (line in the old file). Without them the model spent many
+  (line in the new file) or `L<n>` (line in the old file) and a `|`, followed by the diff line, so
+  the `+`/`-` marker always comes right after the `|`. Without the numbers the model spent many
   turns reading small slices of the source to find the line to comment on.
 - **Threads come from GraphQL.** With GitHub MCP v0.27.0, `pull_request_read`'s `get_reviews` and
   `get_comments` methods always fail: they return an array as `structuredContent`, which Gemini
