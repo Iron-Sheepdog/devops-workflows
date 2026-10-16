@@ -358,6 +358,28 @@ jobs:
           DIFF_PARTS: '${{ steps.save_pr.outputs.parts }}'
           TOTAL_CHARS: '${{ steps.save_pr.outputs.total_chars }}'
 
+      # A run that was cancelled (by a newer push, the job timeout or a lost
+      # runner) can leave its pending review behind, since the partial-review
+      # step doesn't run then. GitHub allows one pending review per user on a
+      # pull request, so this run's `create` would fail and its comments would
+      # be added to the old review. A failure here shouldn't stop the review.
+      - name: Delete a pending review left by an earlier run
+        continue-on-error: true
+        run: |-
+          reviews_path="repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews"
+
+          # GitHub returns a pending review only to its author, so any pending
+          # review listed here is one this token drafted.
+          review_ids=$(gh api --paginate "${reviews_path}" --jq '.[] | select(.state == "PENDING") | .id')
+          for review_id in ${review_ids}; do
+            gh api -X DELETE "${reviews_path}/${review_id}" > /dev/null
+            echo "Deleted pending review ${review_id}, left by an earlier run."
+          done
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          REPOSITORY: '${{ github.repository }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+
       - name: Run Gemini pull request review
         uses: google-github-actions/run-gemini-cli@v0 # ratchet:exclude
         id: gemini_pr_review

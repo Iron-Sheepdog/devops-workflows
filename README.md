@@ -189,7 +189,9 @@ calls that could not work in this job. The workflow now prevents that:
   submitted at the end. If the run still stops early, whether at the turn limit or a minute
   before `timeout_minutes`, a final step submits the pending review with a summary marked
   _partial_ that links to the run. The job still fails, so the incomplete review is visible in the
-  checks.
+  checks. A run that is cancelled instead (by a newer push, the job timeout or a lost runner)
+  leaves its pending review behind, so the next run deletes that pending review before it starts
+  the review.
 
 To see where a review spends its turns, set `upload_artifacts: true` and read `telemetry.log` in the
 `gemini-output` artifact.
