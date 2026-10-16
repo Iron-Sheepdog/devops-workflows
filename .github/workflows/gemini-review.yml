@@ -41,8 +41,8 @@ on:
       timeout_minutes:
         type: number
         description:
-          Wall-clock minutes before the review job is cancelled. The Gemini step gets one minute less, so a review that runs long still posts the comments it drafted as a partial review. A 38-file,
-          7,000-line PR took about 8 minutes of review, so the default leaves headroom above that; small PRs finish in a few minutes either way.
+          Wall-clock minutes before the review job is cancelled. The Gemini step gets two minutes less, so a review that runs long still posts the comments it drafted as a partial review. On a 38-file,
+          7,400-line PR the review job took up to 11 minutes in testing, so the default leaves headroom above that; small PRs finish in a few minutes either way.
         required: false
         default: 15
       gcp_project_id:
@@ -264,9 +264,12 @@ jobs:
       - name: Prepare prompt
         id: prepare
         run: |-
-          # Leave the partial-review step a minute before the job timeout cancels
-          # everything, since a cancelled job runs no further steps.
-          echo "gemini_timeout_minutes=$(( TIMEOUT_MINUTES > 2 ? TIMEOUT_MINUTES - 1 : TIMEOUT_MINUTES ))" >> "${GITHUB_OUTPUT}"
+          # Stop the Gemini step two minutes before the job timeout. The step's
+          # timer starts with the step, so the steps before it and the
+          # partial-review step after it share those two minutes. If the job
+          # timeout fires first, the job is cancelled and the partial review is
+          # skipped.
+          echo "gemini_timeout_minutes=$(( TIMEOUT_MINUTES > 3 ? TIMEOUT_MINUTES - 2 : TIMEOUT_MINUTES ))" >> "${GITHUB_OUTPUT}"
 
           # The prompt replaces the code-review extension's /pr-code-review
           # command, which fetches the diff with a tool call and so can't take
