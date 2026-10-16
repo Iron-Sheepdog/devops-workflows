@@ -78,6 +78,7 @@ For Dependabot, use `github.actor != 'dependabot[bot]'`. Both conditions can be 
 | `gemini_model`                   | `gemini-3.5-flash`  | Gemini model used for the review.                                                                                                                                                                                                                                           |
 | `upload_artifacts`               | `false`             | Upload the Gemini CLI's `stdout.log`, `stderr.log`, and `telemetry.log` as a workflow artifact (`gemini-output`) for diagnostics.                                                                                                                                           |
 | `gemini_debug`                   | `false`             | Enable Gemini CLI debug logging and stream responses to the job log. May expose sensitive content; turn on only when diagnosing issues.                                                                                                                                     |
+| `max_session_turns`              | `100`               | Model turns before the review stops with `FatalTurnLimitedError`. The prompt tells the model this budget. See [Large pull requests](#large-pull-requests).                                                                                                                    |
 | `timeout_minutes`                | `10`                | Wall-clock minutes before the review job is cancelled. Job cost scales with the PR's comment/thread history (thread-aware dedup fetches all threads, including resolved ones, before posting), so long-lived PRs with several review rounds may need more than the default. |
 | `gcp_project_id`                 | `iron-sheepdog-dev` | GCP project the review authenticates against via Workload Identity Federation. Use `isd-ai-innovation` for internal OpEx/analyst repos.                                                                                                                                     |
 | `gcp_location`                   | `global`            | GCP location for Vertex AI inference. `gemini-3.5-flash` requires the `global` endpoint — it isn't served on regional endpoints like `us-central1`.                                                                                                                         |
@@ -156,12 +157,16 @@ A review stops with `FatalTurnLimitedError` when it uses up `max_session_turns`.
 hit that limit because most of their turns went to tool calls that could not work in this job.
 The workflow now prevents that:
 
-- **The whole diff arrives in one call.** Gemini CLI cut any MCP result over 40,000 characters to
-  its first and last parts and saved the rest to a temp file, and it replaced older tool results
-  over a 50,000-token budget with a stub. A large `get_diff` came back mostly missing and was gone
-  from context a turn later, so the model paged through the saved copy with `read_file`. The
-  workflow raises both limits (400,000 characters, 150,000 tokens), which covers the diff of any
-  reasonably sized PR.
+- **The diff is read in batches.** Gemini CLI cuts any MCP result over 40,000 characters to its
+  first and last parts and saves the rest to a temp file. It also keeps only the newest ~50,000
+  tokens of tool output in context and replaces older results with a short stub; that budget
+  can't be changed from settings. A large `get_diff` came back mostly missing and was gone a turn
+  later, so the model paged through the saved copy with `read_file`. Now a step saves the diff
+  under `.pr-review/` as one file per changed file, plus an index with sizes. The model reads a
+  few at a time and comments on each batch while it's still in context. If GitHub won't return the
+  diff (over 20,000 lines or 300 files), the model falls back to `pull_request_read` `get_files`.
+  The MCP truncation limit is also raised to 400,000 characters so other large results come back
+  whole.
 - **Only the tools the review needs are offered.** The shell is denied by policy in this job, and
   web access and file writes are switched off too. The GitHub MCP server exposes only
   `pull_request_read`, `pull_request_review_write` and `add_comment_to_pending_review`. A tool the
@@ -170,9 +175,10 @@ The workflow now prevents that:
   calls into one turn, to post inline comments as it goes, and that `node_modules` isn't installed
   and `.env` files can't be read.
 - **Drafted comments aren't lost.** The extension holds inline comments in a pending review and
-  submits it only at the end. If the run still stops early, a final step submits the pending review
-  with a summary marked _partial_ that links to the run. The job still fails, so the incomplete
-  review is visible in the checks.
+  submits it only at the end. If the run still stops early, whether at the turn limit or a minute
+  before `timeout_minutes`, a final step submits the pending review with a summary marked
+  _partial_ that links to the run. The job still fails, so the incomplete review is visible in the
+  checks.
 
 To see where a review spends its turns, set `upload_artifacts: true` and read `telemetry.log` in the
 `gemini-output` artifact.

@@ -93,16 +93,59 @@ jobs:
         with:
           persist-credentials: false
 
+      # Save the diff as one small file per changed file, plus an index, for the
+      # reviewer to read a few at a time. Gemini CLI keeps only the newest ~50,000
+      # tokens of tool output in context and replaces older results with a short
+      # stub (not configurable from settings), so a large diff fetched in one
+      # get_diff call is gone a turn after it is read and the model pages through
+      # a saved copy instead. A batch read just before commenting stays in context.
+      - name: Save the PR diff
+        run: |-
+          mkdir -p "${DIFF_DIR}"
+          if ! gh pr diff "${PULL_REQUEST_NUMBER}" --repo "${REPOSITORY}" > "${DIFF_DIR}/pr.diff"; then
+            echo "::warning::Could not fetch the PR diff (GitHub refuses diffs over 20,000 lines or 300 files). The review falls back to pull_request_read get_files."
+            echo "The diff could not be saved for this run. Use pull_request_read with method get_files instead." > "${DIFF_DIR}/index.txt"
+            rm -f "${DIFF_DIR}/pr.diff"
+            exit 0
+          fi
+
+          awk -v dir="${DIFF_DIR}" '
+            /^diff --git / { if (out) close(out); out = sprintf("%s/%04d.diff", dir, ++n) }
+            out { print > out }
+          ' "${DIFF_DIR}/pr.diff"
+          rm "${DIFF_DIR}/pr.diff"
+
+          {
+            printf 'One diff file per changed file. Columns: diff file, characters, lines added/removed, changed path.\n'
+            for f in "${DIFF_DIR}"/[0-9]*.diff; do
+              [ -e "${f}" ] || continue
+              header=$(head -n 1 "${f}")
+              counts=$(awk '/^\+/ && !/^\+\+\+ / { a++ } /^-/ && !/^--- / { d++ } END { printf "+%d/-%d", a, d }' "${f}")
+              printf '%s\t%s\t%s\t%s\n' "${f}" "$(wc -c < "${f}")" "${counts}" "${header##* b/}"
+            done
+          } > "${DIFF_DIR}/index.txt"
+          cat "${DIFF_DIR}/index.txt"
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          REPOSITORY: '${{ github.repository }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          DIFF_DIR: .pr-review
+
       - name: Prepare prompt context
+        id: prepare
         run: |-
           mkdir -p .gemini
+
+          # Leave the partial-review step a minute before the job timeout cancels
+          # everything, since a cancelled job runs no further steps.
+          echo "gemini_timeout_minutes=$(( TIMEOUT_MINUTES > 2 ? TIMEOUT_MINUTES - 1 : TIMEOUT_MINUTES ))" >> "${GITHUB_OUTPUT}"
 
           # Standing rules appended to every review. The process rules make review
           # rounds converge instead of re-reviewing the whole PR from scratch each
           # push (https://github.com/Iron-Sheepdog/devops-workflows/issues/22). The
           # budget rules keep large PRs inside max_session_turns: without them the
           # model spends its turns on calls that can only fail in this job (shell,
-          # node_modules, .env) or on paging through a diff it already has.
+          # node_modules, .env) or on paging through a diff that left its context.
           # Every rule must be doable with the tools enabled in the settings below.
           STANDING_INSTRUCTIONS=$(cat <<'GEMINI_RULES_EOF'
           Follow these rules on every run, in addition to the usual code review.
@@ -110,8 +153,9 @@ jobs:
           Budget:
 
           - You have at most __MAX_SESSION_TURNS__ model turns for the whole review. A turn can hold several tool calls, so make independent calls together (for example, read several files at once) instead of one per turn.
-          - Call `pull_request_read` with method `get_diff` once. The whole diff comes back in that one response; don't fetch it again or page through a saved copy of it.
-          - Create the pending review as soon as you have read the diff and the existing threads, add each inline comment as soon as you have settled on it, and leave yourself turns to submit the review. If the run is cut off, only comments already added to the pending review are kept.
+          - The diff is already saved under `.pr-review/`, one file per changed file. Read `.pr-review/index.txt` first; it lists each file's diff with its size. Don't call `pull_request_read` with method `get_diff`, unless the index says the diff couldn't be saved, in which case use method `get_files`.
+          - Read the per-file diffs a few at a time: several `read_file` calls in one turn, under about 100,000 characters per batch. Add the inline comments for a batch before you read the next one, because older tool output drops out of your context after a few turns. Skip lockfile diffs such as `yarn.lock` and `package-lock.json`.
+          - Create the pending review before your first batch, add each inline comment as soon as you have settled on it, and leave yourself turns to submit the review. If the run is cut off, only comments already added to the pending review are kept.
           - Read other repository files only when a finding depends on code outside the diff.
           - Dependencies are not installed, so `node_modules` does not exist. Don't search or read it; judge library usage from the diff and the repository's own code.
           - Reads of `.env` files and of paths outside the repository are blocked. A changed `.env` file is already in the diff.
@@ -151,10 +195,12 @@ jobs:
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
           ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
           MAX_SESSION_TURNS: '${{ inputs.max_session_turns }}'
+          TIMEOUT_MINUTES: '${{ inputs.timeout_minutes }}'
 
       - name: Run Gemini pull request review
         uses: google-github-actions/run-gemini-cli@v0 # ratchet:exclude
         id: gemini_pr_review
+        timeout-minutes: ${{ fromJSON(steps.prepare.outputs.gemini_timeout_minutes) }}
         env:
           GEMINI_CLI_TRUST_WORKSPACE: 'true'
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
@@ -178,14 +224,11 @@ jobs:
           #   a reviewer has no use for web access or file writes. Excluded tools
           #   aren't offered to the model, so it doesn't spend turns trying them.
           # - truncateToolOutputThreshold (default 40,000 chars): above it, an MCP
-          #   result is cut to its first 20% and last 80% and the rest saved to a
-          #   temp file, so a large get_diff arrived mostly missing and the model
-          #   paged through the file with read_file. 400,000 chars (~100k tokens)
-          #   returns the whole diff of any reasonably sized PR in one call.
-          # - outputMasking.protectionThresholdTokens (default 50,000 tokens):
-          #   older tool results beyond that budget are replaced with a stub, which
-          #   masked a large diff one turn after it was read. 150,000 keeps a full
-          #   diff in context alongside the files read after it.
+          #   result is cut to its first 20% and last 80%, with the rest saved to
+          #   a temp file the model then has to page through. 400,000 chars (Gemini
+          #   CLI also caps it by the context left) lets results such as the
+          #   review threads of a long-lived PR, or the get_files fallback, come
+          #   back whole.
           # - includeTools: only the GitHub MCP tools the review uses (as in the
           #   upstream pr-review example), instead of ~40 including write tools.
           settings: |-
@@ -202,13 +245,6 @@ jobs:
                   "replace"
                 ],
                 "truncateToolOutputThreshold": 400000
-              },
-              "contextManagement": {
-                "tools": {
-                  "outputMasking": {
-                    "protectionThresholdTokens": 150000
-                  }
-                }
               },
               "telemetry": {
                 "enabled": true,
@@ -255,9 +291,10 @@ jobs:
         run: |-
           reviews_path="repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews"
 
-          # A pending review is visible only to its author, which is this token.
+          # GitHub returns a pending review only to its author, so any pending
+          # review listed here is the one this token drafted.
           review_id=$(gh api --paginate "${reviews_path}" \
-            --jq '.[] | select(.state == "PENDING" and .user.login == "github-actions[bot]") | .id' | awk 'NR == 1')
+            --jq '.[] | select(.state == "PENDING") | .id' | awk 'NR == 1')
           if [ -z "${review_id}" ]; then
             echo "No pending review to submit."
             exit 0
