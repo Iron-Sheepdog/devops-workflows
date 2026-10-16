@@ -123,9 +123,9 @@ Full-history scanning keeps its own value, since newer Gitleaks releases ship ru
 
 1. A pull request is opened or updated in your repository.
 2. Your workflow calls the reusable `gemini-review.yml` workflow in this repo. Authentication is handled transparently via Workload Identity Federation — nothing to configure on the caller side beyond the `id-token: write` permission.
-3. The workflow checks out the code and runs the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action with the [`code-review` extension](https://github.com/gemini-cli-extensions/code-review) (`/pr-code-review`), which reads the PR via the GitHub MCP server and reviews security, performance, reliability, maintainability, and functionality.
+3. The workflow checks out the code, saves the PR's description, existing review threads and diff, and runs the official [`google-github-actions/run-gemini-cli`](https://github.com/google-github-actions/run-gemini-cli) action with a prompt that includes them. The model uses the `code-review-commons` skill from the [`code-review` extension](https://github.com/gemini-cli-extensions/code-review) to review security, performance, reliability, maintainability, and functionality, and posts through the GitHub MCP server. See [Large pull requests](#large-pull-requests) for why the workflow builds its own prompt instead of running the extension's `/pr-code-review` command.
 4. Findings are posted back to the pull request as inline review comments plus a summary, with severity levels (Critical → Low).
-5. When a pull request has no issues worth raising as inline comments, the review summary ends with a final `LGTM :+1:` line as a sign-off. This is steered via the review prompt (the `code-review` extension always posts a `COMMENT`-type review, so this is a tidy comment rather than a GitHub "Approved" status), and is layered on top of any `additional_context` you pass.
+5. When a pull request has no issues worth raising as inline comments, the review summary ends with a final `LGTM :+1:` line as a sign-off. This is steered via the review prompt (the review is always submitted as a `COMMENT`-type review, so this is a tidy comment rather than a GitHub "Approved" status), and is layered on top of any `additional_context` you pass.
 
 ### Converging across review rounds
 
@@ -133,8 +133,8 @@ Because every push re-runs the full review with no built-in memory of prior roun
 bakes in standing process rules (layered on top of any `additional_context` you pass) so repeated
 pushes converge on "done" instead of resurfacing an endless stream of new nits:
 
-- **Thread-aware dedup** — before commenting, the review checks existing PR review threads
-  (including resolved ones) and won't re-post a duplicate. The GitHub MCP server has no tool for
+- **Thread-aware dedup** — the prompt lists the existing PR review threads (including resolved
+  ones) and the review won't re-post a duplicate. The GitHub MCP server has no tool for
   replying on an existing thread, so a declined suggestion that comes back with new evidence is
   raised in the summary, pointing at the file and line, rather than as a new thread.
 - **Summary marker** — each review summary starts with a `<!-- gemini-review-summary -->` marker
@@ -154,33 +154,38 @@ follow-up ideas (e.g. incremental re-review of only the delta since the last rev
 ### Large pull requests
 
 A review stops with `FatalTurnLimitedError` when it uses up `max_session_turns`. Large PRs used to
-hit that limit because most of their turns went to tool calls that could not work in this job.
-The workflow now prevents that:
+hit that limit because most of their turns went to fetching and re-fetching the diff, and to tool
+calls that could not work in this job. The workflow now prevents that:
 
-- **The diff is read in batches.** Gemini CLI cuts any MCP result over 40,000 characters to its
-  first and last parts and saves the rest to a temp file. It also keeps only the newest ~50,000
-  tokens of tool output in context and replaces older results with a short stub; that budget
-  can't be changed from settings. A large `get_diff` came back mostly missing and was gone a turn
-  later, so the model paged through the saved copy with `read_file`. Now a step saves the diff
-  under `.pr-review/` as one file per changed file, plus an index with sizes. The model reads a
-  few at a time and comments on each batch while it's still in context. If GitHub won't return the
-  diff (over 20,000 lines or 300 files), the model falls back to `pull_request_read` `get_files`.
-  The MCP truncation limit is also raised to 400,000 characters so other large results come back
-  whole.
+- **The pull request is in the prompt.** Gemini CLI cuts any MCP result over 40,000 characters to
+  its first and last parts. It also keeps only the newest ~50,000 tokens of tool output in context
+  and replaces older results with a short stub, and that budget can't be changed from settings. On
+  a large PR the model read the diff, lost it a few turns later, and spent most of its turns
+  re-reading changed files. Now a step saves the PR's description, its existing review threads and
+  its diff under `.pr-review/`. The prompt references them as `@path`, which Gemini CLI inlines
+  into the prompt itself, and the prompt is never masked. The extension's `/pr-code-review` command
+  fetches the diff with a tool call, so the workflow builds its own prompt and keeps the
+  extension's `code-review-commons` skill for the review criteria.
+- **Very large diffs are read in parts.** The diff is saved in parts of at most 1,500 lines. Over
+  500,000 characters (~125k tokens), the parts stay on disk and the model reads them one per turn,
+  commenting on each before the next. If GitHub won't return the diff at all (over 20,000 lines or
+  300 files), the model pages through `pull_request_read` `get_files`.
 - **Diff lines carry their line numbers.** Each hunk line in the saved diff starts with `R<n>`
   (line in the new file) or `L<n>` (line in the old file). Without them the model spent many
   turns reading small slices of the source to find the line to comment on.
+- **Threads come from GraphQL.** With GitHub MCP v0.27.0, `pull_request_read`'s `get_reviews` and
+  `get_comments` methods always fail: they return an array as `structuredContent`, which Gemini
+  CLI's MCP client rejects. The threads in the prompt replace those calls.
 - **Only the tools the review needs are offered.** The shell is denied by policy in this job, and
   web access, file writes and progress narration (`update_topic`) are switched off too. The GitHub
   MCP server exposes only `pull_request_read`, `pull_request_review_write` and
   `add_comment_to_pending_review`. A tool the model can't see is a tool it doesn't spend turns
   trying.
 - **The prompt sets the order of work.** It tells the model how many turns it has, to create the
-  pending review in its first turn, to comment on each batch of files before reading the next, to
-  read whole files several per turn, and that `node_modules` isn't installed and `.env` files
-  can't be read.
-- **Drafted comments aren't lost.** The extension holds inline comments in a pending review and
-  submits it only at the end. If the run still stops early, whether at the turn limit or a minute
+  pending review in its first turn, to add comments as it goes, to read whole files several per
+  turn, and that `node_modules` isn't installed and `.env` files can't be read.
+- **Drafted comments aren't lost.** Inline comments sit in a pending review until the review is
+  submitted at the end. If the run still stops early, whether at the turn limit or a minute
   before `timeout_minutes`, a final step submits the pending review with a summary marked
   _partial_ that links to the run. The job still fails, so the incomplete review is visible in the
   checks.
