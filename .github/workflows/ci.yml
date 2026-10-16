@@ -32,3 +32,6 @@ jobs:
       pull-requests: write
       id-token: write
     uses: ./.github/workflows/gemini-review.yml
+    # TEMPORARY: upload stdout/stderr logs to verify the policy migration. Revert before merge.
+    with:
+      upload_artifacts: true
