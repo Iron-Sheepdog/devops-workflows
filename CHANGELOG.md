@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.3](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.2...v2.2.3) (2026-10-16)
+
+
+### Continuous Integration
+
+* **gemini-review:** finish reviews of large PRs within the turn limit ([#42](https://github.com/Iron-Sheepdog/devops-workflows/issues/42)) ([6412150](https://github.com/Iron-Sheepdog/devops-workflows/commit/6412150f1563e2cbf760379bd987acf285bb6ce2))
+
 ## [2.2.2](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.1...v2.2.2) (2026-08-07)
 
 
