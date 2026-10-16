@@ -79,7 +79,7 @@ For Dependabot, use `github.actor != 'dependabot[bot]'`. Both conditions can be 
 | `upload_artifacts`               | `false`             | Upload the Gemini CLI's `stdout.log`, `stderr.log`, and `telemetry.log` as a workflow artifact (`gemini-output`) for diagnostics.                                                                                                                                           |
 | `gemini_debug`                   | `false`             | Enable Gemini CLI debug logging and stream responses to the job log. May expose sensitive content; turn on only when diagnosing issues.                                                                                                                                     |
 | `max_session_turns`              | `100`               | Model turns before the review stops with `FatalTurnLimitedError`. The prompt tells the model this budget. See [Large pull requests](#large-pull-requests).                                                                                                                    |
-| `timeout_minutes`                | `10`                | Wall-clock minutes before the review job is cancelled. Job cost scales with the PR's comment/thread history (thread-aware dedup fetches all threads, including resolved ones, before posting), so long-lived PRs with several review rounds may need more than the default. |
+| `timeout_minutes`                | `15`                | Wall-clock minutes before the review job is cancelled. The Gemini step gets one minute less, so a review that runs long still posts its drafted comments as a partial review. A 38-file, 7,000-line PR took about 8 minutes of review. |
 | `gcp_project_id`                 | `iron-sheepdog-dev` | GCP project the review authenticates against via Workload Identity Federation. Use `isd-ai-innovation` for internal OpEx/analyst repos.                                                                                                                                     |
 | `gcp_location`                   | `global`            | GCP location for Vertex AI inference. `gemini-3.5-flash` requires the `global` endpoint — it isn't served on regional endpoints like `us-central1`.                                                                                                                         |
 | `gcp_workload_identity_provider` | _(empty)_           | Overrides the WIF provider to impersonate. Falls back to the caller's `VERTEX_WIF_PROVIDER` repository/organization variable if omitted.                                                                                                                                    |
@@ -167,13 +167,18 @@ The workflow now prevents that:
   diff (over 20,000 lines or 300 files), the model falls back to `pull_request_read` `get_files`.
   The MCP truncation limit is also raised to 400,000 characters so other large results come back
   whole.
+- **Diff lines carry their line numbers.** Each hunk line in the saved diff starts with `R<n>`
+  (line in the new file) or `L<n>` (line in the old file). Without them the model spent many
+  turns reading small slices of the source to find the line to comment on.
 - **Only the tools the review needs are offered.** The shell is denied by policy in this job, and
-  web access and file writes are switched off too. The GitHub MCP server exposes only
-  `pull_request_read`, `pull_request_review_write` and `add_comment_to_pending_review`. A tool the
-  model can't see is a tool it doesn't spend turns trying.
-- **The prompt sets a budget.** It tells the model how many turns it has, to batch independent
-  calls into one turn, to post inline comments as it goes, and that `node_modules` isn't installed
-  and `.env` files can't be read.
+  web access, file writes and progress narration (`update_topic`) are switched off too. The GitHub
+  MCP server exposes only `pull_request_read`, `pull_request_review_write` and
+  `add_comment_to_pending_review`. A tool the model can't see is a tool it doesn't spend turns
+  trying.
+- **The prompt sets the order of work.** It tells the model how many turns it has, to create the
+  pending review in its first turn, to comment on each batch of files before reading the next, to
+  read whole files several per turn, and that `node_modules` isn't installed and `.env` files
+  can't be read.
 - **Drafted comments aren't lost.** The extension holds inline comments in a pending review and
   submits it only at the end. If the run still stops early, whether at the turn limit or a minute
   before `timeout_minutes`, a final step submits the pending review with a summary marked

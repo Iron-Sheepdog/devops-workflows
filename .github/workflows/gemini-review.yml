@@ -41,10 +41,10 @@ on:
       timeout_minutes:
         type: number
         description:
-          Wall-clock minutes before the review job is cancelled. The job cost scales with the PR's existing comment/thread history (the standing thread-aware-dedup rules require fetching all threads,
-          including resolved ones, via the GitHub MCP server before posting), so long-lived PRs with several review rounds may need more than the default.
+          Wall-clock minutes before the review job is cancelled. The Gemini step gets one minute less, so a review that runs long still posts the comments it drafted as a partial review. A 38-file,
+          7,000-line PR took about 8 minutes of review, so the default leaves headroom above that; small PRs finish in a few minutes either way.
         required: false
-        default: 10
+        default: 15
       gcp_project_id:
         type: string
         description:
@@ -99,6 +99,10 @@ jobs:
       # stub (not configurable from settings), so a large diff fetched in one
       # get_diff call is gone a turn after it is read and the model pages through
       # a saved copy instead. A batch read just before commenting stays in context.
+      #
+      # Each hunk line is prefixed with its line number (R<n> in the new file,
+      # L<n> in the old one). Without them the model spent many turns reading
+      # small slices of the source to find the line to comment on.
       - name: Save the PR diff
         run: |-
           mkdir -p "${DIFF_DIR}"
@@ -110,8 +114,25 @@ jobs:
           fi
 
           awk -v dir="${DIFF_DIR}" '
-            /^diff --git / { if (out) close(out); out = sprintf("%s/%04d.diff", dir, ++n) }
-            out { print > out }
+            /^diff --git / {
+              if (out) close(out)
+              out = sprintf("%s/%04d.diff", dir, ++n)
+              in_hunk = 0
+            }
+            !out { next }
+            /^@@ / {
+              # @@ -<old start>[,<count>] +<new start>[,<count>] @@
+              split($2, old_range, ","); old_line = -old_range[1]
+              split($3, new_range, ","); new_line = new_range[1] + 0
+              in_hunk = 1
+              print > out
+              next
+            }
+            !in_hunk { print > out; next }
+            /^\+/ { printf "R%-5d %s\n", new_line++, $0 > out; next }
+            /^-/ { printf "L%-5d %s\n", old_line++, $0 > out; next }
+            /^ / { printf "R%-5d %s\n", new_line++, $0 > out; old_line++; next }
+            { print > out }
           ' "${DIFF_DIR}/pr.diff"
           rm "${DIFF_DIR}/pr.diff"
 
@@ -120,7 +141,7 @@ jobs:
             for f in "${DIFF_DIR}"/[0-9]*.diff; do
               [ -e "${f}" ] || continue
               header=$(head -n 1 "${f}")
-              counts=$(awk '/^\+/ && !/^\+\+\+ / { a++ } /^-/ && !/^--- / { d++ } END { printf "+%d/-%d", a, d }' "${f}")
+              counts=$(awk '/^R[0-9]+ +\+/ { a++ } /^L[0-9]+ +-/ { d++ } END { printf "+%d/-%d", a, d }' "${f}")
               printf '%s\t%s\t%s\t%s\n' "${f}" "$(wc -c < "${f}")" "${counts}" "${header##* b/}"
             done
           } > "${DIFF_DIR}/index.txt"
@@ -148,24 +169,27 @@ jobs:
           # node_modules, .env) or on paging through a diff that left its context.
           # Every rule must be doable with the tools enabled in the settings below.
           STANDING_INSTRUCTIONS=$(cat <<'GEMINI_RULES_EOF'
-          Follow these rules on every run, in addition to the usual code review.
+          Follow these rules on every run. Where they differ from the steps above, these rules win.
 
-          Budget:
+          How to work through the review. You have at most __MAX_SESSION_TURNS__ model turns, and a turn can hold several tool calls, so make independent calls in the same turn.
 
-          - You have at most __MAX_SESSION_TURNS__ model turns for the whole review. A turn can hold several tool calls, so make independent calls together (for example, read several files at once) instead of one per turn.
-          - The diff is already saved under `.pr-review/`, one file per changed file. Read `.pr-review/index.txt` first; it lists each file's diff with its size. Don't call `pull_request_read` with method `get_diff`, unless the index says the diff couldn't be saved, in which case use method `get_files`.
-          - Read the per-file diffs a few at a time: several `read_file` calls in one turn, under about 100,000 characters per batch. Add the inline comments for a batch before you read the next one, because older tool output drops out of your context after a few turns. Skip lockfile diffs such as `yarn.lock` and `package-lock.json`.
-          - Create the pending review before your first batch, add each inline comment as soon as you have settled on it, and leave yourself turns to submit the review. If the run is cut off, only comments already added to the pending review are kept.
-          - Read other repository files only when a finding depends on code outside the diff.
-          - Dependencies are not installed, so `node_modules` does not exist. Don't search or read it; judge library usage from the diff and the repository's own code.
+          1. In your first turn, do all of these together: read `.pr-review/index.txt`, fetch the existing review threads with `pull_request_read` method `get_review_comments`, and create the pending review with `pull_request_review_write` method `create`. Don't call `pull_request_read` with method `get_diff`. The diff is already saved under `.pr-review/` as one file per changed file, and the index lists them with their sizes. Use method `get_files` only if the index says the diff couldn't be saved.
+          2. Review the per-file diffs in batches of a few files, under about 100,000 characters per batch, reading every file of a batch in one turn. Add that batch's inline comments with `add_comment_to_pending_review` before you read the next batch. Older tool output drops out of your context after a few turns, so a finding you hold back means reading the file again. Skip lockfile diffs such as `yarn.lock` and `package-lock.json`.
+          3. Each line inside a diff hunk starts with its line number. `R236` is line 236 of the new file (comment with side RIGHT and line 236), and `L45` is line 45 of the old file (side LEFT). Use these numbers for comments instead of re-reading files to find a line, and leave the prefix out of code suggestions.
+          4. Read other repository files only when a finding depends on code outside the diff. Read a whole file in one call rather than in slices, and read several files in the same turn.
+          5. Submit the review with `pull_request_review_write` method `submit_pending` once every batch is done, and leave yourself turns to do it. If the run is cut off, the comments already added are posted as a partial review, and findings you were still holding back are lost.
+
+          What this job can't do:
+
+          - Dependencies aren't installed, so `node_modules` doesn't exist. Don't search or read it; judge library usage from the diff and the repository's own code.
           - Reads of `.env` files and of paths outside the repository are blocked. A changed `.env` file is already in the diff.
-          - This job has no shell and no web access. The only GitHub tools are `pull_request_read`, `pull_request_review_write` and `add_comment_to_pending_review`.
+          - There's no shell and no web access. The only GitHub tools are `pull_request_read`, `pull_request_review_write` and `add_comment_to_pending_review`, so you can't reply on an existing thread or edit an earlier comment or summary.
 
-          Review process:
+          Review rules:
 
-          1. Thread-aware dedup: before adding inline comments, fetch the existing review threads once with `pull_request_read` method `get_review_comments`; the result includes resolved threads. Never add a comment that duplicates an existing thread. You can't reply on an existing thread from this job, so if you want to re-raise a point from a resolved or declined thread with new evidence, say so in the summary and name the file and line instead of opening a new thread.
-          2. Summary marker: the review summary (the body you submit the review with) must start with the exact marker line `<!-- gemini-review-summary -->` on its own line. Earlier summaries can't be edited from this job, so don't look for them.
-          3. Severity floor for inline threads: only open inline review threads for MEDIUM severity and above. Roll LOW-severity observations into the summary as a bullet list instead of inline threads.
+          1. Thread-aware dedup: never add a comment that duplicates an existing thread, resolved or not. If you want to re-raise a point from a resolved or declined thread with new evidence, say so in the summary and name the file and line instead of opening a new thread.
+          2. Summary marker: the review summary (the body you submit the review with) must start with the exact line `<!-- gemini-review-summary -->` on its own line, above the `## 📋 Review Summary` heading.
+          3. Severity floor: only add inline comments for MEDIUM severity and above. Put LOW-severity observations in the summary as a bullet list instead.
           4. Convergence rule: if the existing threads show the latest changes only address earlier review feedback and all of those threads are resolved, don't hunt for new nits; submit a short summary that ends in "LGTM :+1:".
 
           When the diff has no issues worth raising as inline comments, end the summary with a final line that reads exactly "LGTM :+1:".
@@ -221,8 +245,9 @@ jobs:
           github_pr_number: '${{ github.event.pull_request.number }}'
           # Tool settings, which keep large PRs inside max_session_turns:
           # - tools.exclude: the shell is denied by policy in this job anyway, and
-          #   a reviewer has no use for web access or file writes. Excluded tools
-          #   aren't offered to the model, so it doesn't spend turns trying them.
+          #   a reviewer has no use for web access, file writes or update_topic
+          #   (progress narration nobody reads in CI). Excluded tools aren't
+          #   offered to the model, so it doesn't spend turns trying them.
           # - truncateToolOutputThreshold (default 40,000 chars): above it, an MCP
           #   result is cut to its first 20% and last 80%, with the rest saved to
           #   a temp file the model then has to page through. 400,000 chars (Gemini
@@ -242,7 +267,8 @@ jobs:
                   "web_fetch",
                   "google_web_search",
                   "write_file",
-                  "replace"
+                  "replace",
+                  "update_topic"
                 ],
                 "truncateToolOutputThreshold": 400000
               },
