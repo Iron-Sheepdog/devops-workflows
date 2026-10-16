@@ -97,10 +97,37 @@ jobs:
         run: |-
           mkdir -p .gemini
 
-          # Standing process rules appended to every review, so review rounds
-          # converge instead of re-reviewing the whole PR from scratch each push.
-          # See https://github.com/Iron-Sheepdog/devops-workflows/issues/22.
-          STANDING_INSTRUCTIONS=$'Follow these review-process rules on every run, in addition to the usual code review:\n\n1. Thread-aware dedup: before posting any inline comment, fetch the PR\'s existing review threads via the GitHub MCP server, including resolved ones. Never re-post a suggestion that duplicates an existing thread. If you want to re-raise a point from a resolved or declined thread with new evidence, reply on that existing thread instead of opening a new one.\n2. Single evolving summary: your summary comment must start with the exact marker line `<!-- gemini-review-summary -->` on its own line. Before posting, check whether a PR issue comment already contains this marker. If one exists, update that comment in place instead of posting a new comment.\n3. Severity floor for inline threads: only open inline review threads for MEDIUM severity and above. Roll LOW-severity observations into the summary comment as a bullet list instead of inline threads.\n4. Convergence rule: if the diff since the last reviewed commit only addresses prior review feedback and all previous threads are resolved, do not hunt for new nits - update the summary comment to end in "LGTM :+1:" instead.\n\nWhen the diff has no issues worth raising as inline comments, end the summary comment with a final line that reads exactly "LGTM :+1:".'
+          # Standing rules appended to every review. The process rules make review
+          # rounds converge instead of re-reviewing the whole PR from scratch each
+          # push (https://github.com/Iron-Sheepdog/devops-workflows/issues/22). The
+          # budget rules keep large PRs inside max_session_turns: without them the
+          # model spends its turns on calls that can only fail in this job (shell,
+          # node_modules, .env) or on paging through a diff it already has.
+          # Every rule must be doable with the tools enabled in the settings below.
+          STANDING_INSTRUCTIONS=$(cat <<'GEMINI_RULES_EOF'
+          Follow these rules on every run, in addition to the usual code review.
+
+          Budget:
+
+          - You have at most __MAX_SESSION_TURNS__ model turns for the whole review. A turn can hold several tool calls, so make independent calls together (for example, read several files at once) instead of one per turn.
+          - Call `pull_request_read` with method `get_diff` once. The whole diff comes back in that one response; don't fetch it again or page through a saved copy of it.
+          - Create the pending review as soon as you have read the diff and the existing threads, add each inline comment as soon as you have settled on it, and leave yourself turns to submit the review. If the run is cut off, only comments already added to the pending review are kept.
+          - Read other repository files only when a finding depends on code outside the diff.
+          - Dependencies are not installed, so `node_modules` does not exist. Don't search or read it; judge library usage from the diff and the repository's own code.
+          - Reads of `.env` files and of paths outside the repository are blocked. A changed `.env` file is already in the diff.
+          - This job has no shell and no web access. The only GitHub tools are `pull_request_read`, `pull_request_review_write` and `add_comment_to_pending_review`.
+
+          Review process:
+
+          1. Thread-aware dedup: before adding inline comments, fetch the existing review threads once with `pull_request_read` method `get_review_comments`; the result includes resolved threads. Never add a comment that duplicates an existing thread. You can't reply on an existing thread from this job, so if you want to re-raise a point from a resolved or declined thread with new evidence, say so in the summary and name the file and line instead of opening a new thread.
+          2. Summary marker: the review summary (the body you submit the review with) must start with the exact marker line `<!-- gemini-review-summary -->` on its own line. Earlier summaries can't be edited from this job, so don't look for them.
+          3. Severity floor for inline threads: only open inline review threads for MEDIUM severity and above. Roll LOW-severity observations into the summary as a bullet list instead of inline threads.
+          4. Convergence rule: if the existing threads show the latest changes only address earlier review feedback and all of those threads are resolved, don't hunt for new nits; submit a short summary that ends in "LGTM :+1:".
+
+          When the diff has no issues worth raising as inline comments, end the summary with a final line that reads exactly "LGTM :+1:".
+          GEMINI_RULES_EOF
+          )
+          STANDING_INSTRUCTIONS="${STANDING_INSTRUCTIONS//__MAX_SESSION_TURNS__/${MAX_SESSION_TURNS}}"
 
           if [ -n "${ADDITIONAL_CONTEXT}" ]; then
             REVIEW_CONTEXT=$(printf "%s\n\n%s" "${ADDITIONAL_CONTEXT}" "${STANDING_INSTRUCTIONS}")
@@ -123,6 +150,7 @@ jobs:
           REPOSITORY: '${{ github.repository }}'
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
           ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
+          MAX_SESSION_TURNS: '${{ inputs.max_session_turns }}'
 
       - name: Run Gemini pull request review
         uses: google-github-actions/run-gemini-cli@v0 # ratchet:exclude
@@ -145,10 +173,42 @@ jobs:
           upload_artifacts: '${{ inputs.upload_artifacts }}'
           workflow_name: gemini-review
           github_pr_number: '${{ github.event.pull_request.number }}'
+          # Tool settings, which keep large PRs inside max_session_turns:
+          # - tools.exclude: the shell is denied by policy in this job anyway, and
+          #   a reviewer has no use for web access or file writes. Excluded tools
+          #   aren't offered to the model, so it doesn't spend turns trying them.
+          # - truncateToolOutputThreshold (default 40,000 chars): above it, an MCP
+          #   result is cut to its first 20% and last 80% and the rest saved to a
+          #   temp file, so a large get_diff arrived mostly missing and the model
+          #   paged through the file with read_file. 400,000 chars (~100k tokens)
+          #   returns the whole diff of any reasonably sized PR in one call.
+          # - outputMasking.protectionThresholdTokens (default 50,000 tokens):
+          #   older tool results beyond that budget are replaced with a stub, which
+          #   masked a large diff one turn after it was read. 150,000 keeps a full
+          #   diff in context alongside the files read after it.
+          # - includeTools: only the GitHub MCP tools the review uses (as in the
+          #   upstream pr-review example), instead of ~40 including write tools.
           settings: |-
             {
               "model": {
                 "maxSessionTurns": ${{ inputs.max_session_turns }}
+              },
+              "tools": {
+                "exclude": [
+                  "run_shell_command",
+                  "web_fetch",
+                  "google_web_search",
+                  "write_file",
+                  "replace"
+                ],
+                "truncateToolOutputThreshold": 400000
+              },
+              "contextManagement": {
+                "tools": {
+                  "outputMasking": {
+                    "protectionThresholdTokens": 150000
+                  }
+                }
               },
               "telemetry": {
                 "enabled": true,
@@ -166,6 +226,11 @@ jobs:
                     "GITHUB_PERSONAL_ACCESS_TOKEN",
                     "ghcr.io/github/github-mcp-server:v0.27.0"
                   ],
+                  "includeTools": [
+                    "pull_request_read",
+                    "pull_request_review_write",
+                    "add_comment_to_pending_review"
+                  ],
                   "env": {
                     "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
                   }
@@ -180,3 +245,39 @@ jobs:
               "https://github.com/gemini-cli-extensions/code-review"
             ]
           prompt: '/pr-code-review https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number || github.event.issue.number }}'
+
+      # The code-review extension adds inline comments to a pending review and
+      # submits it only at the end, so a run that stops early (for example with
+      # FatalTurnLimitedError) used to leave every drafted comment unpublished.
+      # Submit what it drafted, marked as partial. The job still fails.
+      - name: Submit partial review
+        if: failure() && steps.gemini_pr_review.outcome == 'failure'
+        run: |-
+          reviews_path="repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews"
+
+          # A pending review is visible only to its author, which is this token.
+          review_id=$(gh api --paginate "${reviews_path}" \
+            --jq '.[] | select(.state == "PENDING" and .user.login == "github-actions[bot]") | .id' | awk 'NR == 1')
+          if [ -z "${review_id}" ]; then
+            echo "No pending review to submit."
+            exit 0
+          fi
+
+          comment_count=$(gh api --paginate "${reviews_path}/${review_id}/comments" --jq '.[].id' | wc -l)
+          if [ "${comment_count}" -eq 0 ]; then
+            gh api -X DELETE "${reviews_path}/${review_id}" > /dev/null
+            echo "Deleted an empty pending review."
+            exit 0
+          fi
+
+          body=$(printf '%s\n%s\n\n%s\n' \
+            '<!-- gemini-review-summary -->' \
+            '## 📋 Review Summary (partial)' \
+            "The Gemini review stopped before it finished ([run log](${RUN_URL})). It had drafted the ${comment_count} inline comment(s) below; files it hadn't reached were not reviewed.")
+          gh api -X POST "${reviews_path}/${review_id}/events" -f event=COMMENT -f body="${body}" > /dev/null
+          echo "Submitted a partial review with ${comment_count} inline comment(s)."
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN || github.token }}'
+          REPOSITORY: '${{ github.repository }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          RUN_URL: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'

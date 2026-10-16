@@ -133,10 +133,12 @@ bakes in standing process rules (layered on top of any `additional_context` you 
 pushes converge on "done" instead of resurfacing an endless stream of new nits:
 
 - **Thread-aware dedup** — before commenting, the review checks existing PR review threads
-  (including resolved ones) and won't re-post a duplicate; re-raising a declined suggestion happens
-  as a reply on the original thread, not a new one.
-- **Single evolving summary** — the summary comment is tagged with a `<!-- gemini-review-summary -->`
-  marker and updated in place on later rounds instead of stacking a new summary comment per push.
+  (including resolved ones) and won't re-post a duplicate. The GitHub MCP server has no tool for
+  replying on an existing thread, so a declined suggestion that comes back with new evidence is
+  raised in the summary, pointing at the file and line, rather than as a new thread.
+- **Summary marker** — each review summary starts with a `<!-- gemini-review-summary -->` marker
+  line. Each round still posts a new summary: the MCP server can't edit an earlier one, and asking
+  the model to try sent it looking for tools it doesn't have.
 - **Severity floor for inline threads** — only `MEDIUM` and above get inline review threads; `LOW`
   observations are folded into the summary as a bullet list instead of opening a new thread.
 - **Convergence rule** — if the diff since the last review only addresses prior feedback and all
@@ -147,6 +149,33 @@ These are prompt-level instructions honored on a best-effort basis by the model,
 deterministically enforced — expect a few rounds of drift on any given PR. See
 [issue #22](https://github.com/Iron-Sheepdog/devops-workflows/issues/22) for the full rationale and
 follow-up ideas (e.g. incremental re-review of only the delta since the last reviewed commit).
+
+### Large pull requests
+
+A review stops with `FatalTurnLimitedError` when it uses up `max_session_turns`. Large PRs used to
+hit that limit because most of their turns went to tool calls that could not work in this job.
+The workflow now prevents that:
+
+- **The whole diff arrives in one call.** Gemini CLI cut any MCP result over 40,000 characters to
+  its first and last parts and saved the rest to a temp file, and it replaced older tool results
+  over a 50,000-token budget with a stub. A large `get_diff` came back mostly missing and was gone
+  from context a turn later, so the model paged through the saved copy with `read_file`. The
+  workflow raises both limits (400,000 characters, 150,000 tokens), which covers the diff of any
+  reasonably sized PR.
+- **Only the tools the review needs are offered.** The shell is denied by policy in this job, and
+  web access and file writes are switched off too. The GitHub MCP server exposes only
+  `pull_request_read`, `pull_request_review_write` and `add_comment_to_pending_review`. A tool the
+  model can't see is a tool it doesn't spend turns trying.
+- **The prompt sets a budget.** It tells the model how many turns it has, to batch independent
+  calls into one turn, to post inline comments as it goes, and that `node_modules` isn't installed
+  and `.env` files can't be read.
+- **Drafted comments aren't lost.** The extension holds inline comments in a pending review and
+  submits it only at the end. If the run still stops early, a final step submits the pending review
+  with a summary marked _partial_ that links to the run. The job still fails, so the incomplete
+  review is visible in the checks.
+
+To see where a review spends its turns, set `upload_artifacts: true` and read `telemetry.log` in the
+`gemini-output` artifact.
 
 ## 🔀 Picking it apart (standalone workflows)
 
