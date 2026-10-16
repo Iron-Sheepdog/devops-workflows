@@ -168,8 +168,9 @@ calls that could not work in this job. The workflow now prevents that:
   extension's `code-review-commons` skill for the review criteria.
 - **Very large diffs are read in parts.** The diff is saved in parts of at most 1,500 lines. Over
   500,000 characters (~125k tokens), the parts stay on disk and the model reads them one per turn,
-  commenting on each before the next. If GitHub won't return the diff at all (over 20,000 lines or
-  300 files), the model pages through `pull_request_read` `get_files`.
+  commenting on each before the next. GitHub won't return the diff of a PR over 20,000 lines or
+  300 files, so for those the step rebuilds it from the per-file patches (up to 3,000 files).
+  `pull_request_read` `get_files` isn't an option: it has the same array bug as `get_reviews`.
 - **Diff lines carry their line numbers.** Each hunk line in the saved diff starts with `R<n>`
   (line in the new file) or `L<n>` (line in the old file). Without them the model spent many
   turns reading small slices of the source to find the line to comment on.

@@ -147,10 +147,19 @@ jobs:
             echo "The existing review threads couldn't be loaded. Fetch them with pull_request_read method get_review_comments." > "${PR_DIR}/threads.md"
           fi
 
+          # GitHub refuses the diff of a PR over 20,000 lines or 300 files. Rebuild
+          # it from the per-file patches instead (up to 3,000 files). The model
+          # can't page through them itself: pull_request_read get_files has the
+          # same array structuredContent bug as get_reviews.
           if ! gh pr diff "${PULL_REQUEST_NUMBER}" --repo "${REPOSITORY}" > "${PR_DIR}/pr.diff"; then
-            echo "::warning::Could not fetch the PR diff (GitHub refuses diffs over 20,000 lines or 300 files). The review falls back to pull_request_read get_files."
-            echo "mode=unavailable" >> "${GITHUB_OUTPUT}"
-            exit 0
+            echo "::warning::GitHub refused the PR diff (over 20,000 lines or 300 files). Rebuilding it from the per-file patches."
+            if ! gh api --paginate "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/files?per_page=100" \
+              --jq '.[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n--- a/\(.previous_filename // .filename)\n+++ b/\(.filename)\n\(.patch // "(GitHub omits the patch for this file: it is binary or too large.)")"' \
+              > "${PR_DIR}/pr.diff"; then
+              echo "::warning::Could not load the PR's changed files either. The review will say so instead of reviewing."
+              echo "mode=unavailable" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
           fi
 
           # One numbered diff per changed file.
@@ -178,7 +187,8 @@ jobs:
 
           # Bundle the per-file diffs into parts, starting a new part when the
           # next file would push it over MAX_PART_LINES. A file longer than
-          # that gets parts of its own.
+          # that is split across parts of its own; the next file may share the
+          # last of them.
           index_file="${PR_DIR}/index.txt"
           printf 'Changed files, with the diff part that holds each one and its lines added/removed:\n' > "${index_file}"
           part=0
@@ -214,7 +224,12 @@ jobs:
           rm -rf "${PR_DIR}/files" "${PR_DIR}/pr.diff"
           cat "${index_file}"
 
-          total_chars=$(cat "${PR_DIR}"/part-*.diff | wc -c)
+          parts=''
+          total_chars=0
+          if [ "${part}" -gt 0 ]; then
+            parts=$(cd "${PR_DIR}" && echo part-*.diff)
+            total_chars=$(cat "${PR_DIR}"/part-*.diff | wc -c)
+          fi
           if [ "${total_chars}" -le "${MAX_INLINE_CHARS}" ]; then
             mode=inline
           else
@@ -223,7 +238,7 @@ jobs:
           echo "Diff: ${part} part(s), ${total_chars} characters, mode ${mode}."
           {
             echo "mode=${mode}"
-            echo "parts=$(cd "${PR_DIR}" && echo part-*.diff)"
+            echo "parts=${parts}"
             echo "total_chars=${total_chars}"
           } >> "${GITHUB_OUTPUT}"
         env:
@@ -284,7 +299,7 @@ jobs:
 
           Inline comments:
 
-          - Comment only on lines that start with + or - in the diff. Line numbers and the indentation of code suggestions must match the code exactly.
+          - Comment only on added or removed lines: those with a + or - right after the line number. Line numbers and the indentation of code suggestions must match the code exactly.
           - Start each comment body with the severity in brackets, for example `[HIGH] The listener is never removed...`. When you have a concrete fix, follow the text with a ```suggestion block holding the replacement code, without the R/L line numbers or the +/- markers.
 
           Summary (the body you submit the review with), in exactly this format:
@@ -322,7 +337,7 @@ jobs:
               refs="${refs} @${PR_DIR}/index.txt"
               ;;
             *)
-              pr_section="GitHub didn't return the diff for this pull request (it refuses diffs over 20,000 lines or 300 files). Page through the changed files' patches with \`pull_request_read\` method \`get_files\` and \`perPage\` 10, and add each page's inline comments before fetching the next."
+              pr_section="The diff of this pull request couldn't be loaded for this run. Don't try to fetch it. Submit the review without inline comments, with a summary that says the diff couldn't be loaded and the pull request wasn't reviewed."
               ;;
           esac
 
@@ -370,9 +385,8 @@ jobs:
           # - truncateToolOutputThreshold (default 40,000 chars): above it, an MCP
           #   result is cut to its first 20% and last 80%, with the rest saved to
           #   a temp file the model then has to page through. 400,000 chars (Gemini
-          #   CLI also caps it by the context left) lets results such as the
-          #   review threads of a long-lived PR, or the get_files fallback, come
-          #   back whole.
+          #   CLI also caps it by the context left) lets large results, such as
+          #   the files the model reads, come back whole.
           # - includeTools: only the GitHub MCP tools the review uses (as in the
           #   upstream pr-review example), instead of ~40 including write tools.
           settings: |-
