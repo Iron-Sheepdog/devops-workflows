@@ -48,8 +48,6 @@ jobs:
   gemini-review:
     needs: security-baseline # Only run the AI review if the deterministic checks pass.
     uses: Iron-Sheepdog/devops-workflows/.github/workflows/gemini-review.yml@v2
-    with:
-      gemini_model: gemini-4-argon
 ```
 
 ### Excluding automated PRs
