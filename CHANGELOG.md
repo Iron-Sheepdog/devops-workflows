@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.4](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.3...v2.2.4) (2026-10-29)
+
+
+### Continuous Integration
+
+* **gemini-review:** default gemini_model to gemini-4-argon ([#45](https://github.com/Iron-Sheepdog/devops-workflows/issues/45)) ([a131067](https://github.com/Iron-Sheepdog/devops-workflows/commit/a13106775fb67381cf0d7de1d04df0b3ca440ab5))
+
 ## [2.2.3](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.2...v2.2.3) (2026-10-16)
 
 
