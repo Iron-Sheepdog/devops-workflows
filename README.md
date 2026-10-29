@@ -176,11 +176,13 @@ calls that could not work in this job. The workflow now prevents that:
 - **Threads come from GraphQL.** With GitHub MCP v0.27.0, `pull_request_read`'s `get_reviews` and
   `get_comments` methods always fail: they return an array as `structuredContent`, which Gemini
   CLI's MCP client rejects. The threads in the prompt replace those calls.
-- **Only the tools the review needs are offered.** The shell is denied by policy in this job, and
-  web access, file writes and progress narration (`update_topic`) are switched off too. The GitHub
-  MCP server exposes only `pull_request_read`, `pull_request_review_write` and
-  `add_comment_to_pending_review`. A tool the model can't see is a tool it doesn't spend turns
-  trying.
+- **Only the tools the review needs are offered.** A deny rule in a Gemini CLI
+  [policy file](https://geminicli.com/docs/core/policy-engine/) takes the shell, web access, file
+  writes and progress narration (`update_topic`) out of the tools the model sees. The workflow
+  writes the file outside the checkout and loads it with the `policyPaths` setting. It replaces
+  `tools.exclude`, which Gemini CLI has deprecated. The GitHub MCP server exposes only
+  `pull_request_read`, `pull_request_review_write` and `add_comment_to_pending_review`. A tool the
+  model can't see is a tool it doesn't spend turns trying.
 - **The prompt sets the order of work.** It tells the model how many turns it has, to create the
   pending review in its first turn, to add comments as it goes, to read whole files several per
   turn, and that `node_modules` isn't installed and `.env` files can't be read.

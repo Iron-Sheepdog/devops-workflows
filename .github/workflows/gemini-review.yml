@@ -393,6 +393,26 @@ jobs:
           REPOSITORY: '${{ github.repository }}'
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
 
+      # Deny the built-in tools a reviewer has no use for: the shell (refused in
+      # this headless job anyway), web access, file writes and update_topic
+      # (progress narration nobody reads in CI). A deny rule without an
+      # argsPattern takes the tool out of the list offered to the model, so it
+      # doesn't spend turns trying it. This replaces tools.exclude, which Gemini
+      # CLI deprecated in favor of the policy engine
+      # (https://geminicli.com/docs/core/policy-engine/). policyPaths in the
+      # settings below loads the file at the user tier, which outranks the
+      # allow-all rule that --yolo adds at the default tier. The file is written
+      # outside the checkout, so the pull request under review can't change it.
+      - name: Write Gemini CLI tool policy
+        run: |-
+          cat > "${RUNNER_TEMP}/gemini-review-policy.toml" <<'GEMINI_POLICY_EOF'
+          [[rule]]
+          toolName = ["run_shell_command", "web_fetch", "google_web_search", "write_file", "replace", "update_topic"]
+          decision = "deny"
+          priority = 400
+          denyMessage = "This tool isn't available in the pull request review job."
+          GEMINI_POLICY_EOF
+
       - name: Run Gemini pull request review
         uses: google-github-actions/run-gemini-cli@v0 # ratchet:exclude
         id: gemini_pr_review
@@ -413,10 +433,9 @@ jobs:
           workflow_name: gemini-review
           github_pr_number: '${{ github.event.pull_request.number }}'
           # Tool settings, which keep large PRs inside max_session_turns:
-          # - tools.exclude: the shell is denied by policy in this job anyway, and
-          #   a reviewer has no use for web access, file writes or update_topic
-          #   (progress narration nobody reads in CI). Excluded tools aren't
-          #   offered to the model, so it doesn't spend turns trying them.
+          # - policyPaths: the tool policy from the previous step, which keeps
+          #   the shell, web access, file writes and update_topic away from the
+          #   model.
           # - truncateToolOutputThreshold (default 40,000 chars): above it, an MCP
           #   result is cut to its first 20% and last 80%, with the rest saved to
           #   a temp file the model then has to page through. 400,000 chars (Gemini
@@ -429,15 +448,8 @@ jobs:
               "model": {
                 "maxSessionTurns": ${{ inputs.max_session_turns }}
               },
+              "policyPaths": ["${{ runner.temp }}/gemini-review-policy.toml"],
               "tools": {
-                "exclude": [
-                  "run_shell_command",
-                  "web_fetch",
-                  "google_web_search",
-                  "write_file",
-                  "replace",
-                  "update_topic"
-                ],
                 "truncateToolOutputThreshold": 400000
               },
               "telemetry": {
