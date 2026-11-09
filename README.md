@@ -179,7 +179,7 @@ calls that could not work in this job. The workflow now prevents that:
   `get_comments` methods always fail: they return an array as `structuredContent`, which Gemini
   CLI's MCP client rejects. The threads in the prompt replace those calls.
 - **Only the tools the review needs are offered.** A deny rule in a Gemini CLI
-  [policy file](https://geminicli.com/docs/core/policy-engine/) takes the shell, web access, file
+  [policy file](https://geminicli.com/docs/reference/policy-engine) takes the shell, web access, file
   writes and progress narration (`update_topic`) out of the tools the model sees. The workflow
   writes the file outside the checkout and loads it with the `policyPaths` setting. It replaces
   `tools.exclude`, which Gemini CLI has deprecated. The GitHub MCP server exposes only

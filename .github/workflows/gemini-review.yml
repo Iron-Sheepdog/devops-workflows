@@ -399,10 +399,13 @@ jobs:
       # argsPattern takes the tool out of the list offered to the model, so it
       # doesn't spend turns trying it. This replaces tools.exclude, which Gemini
       # CLI deprecated in favor of the policy engine
-      # (https://geminicli.com/docs/core/policy-engine/). policyPaths in the
+      # (https://geminicli.com/docs/reference/policy-engine). policyPaths in the
       # settings below loads the file at the user tier, which outranks the
-      # allow-all rule that --yolo adds at the default tier. The file is written
-      # outside the checkout, so the pull request under review can't change it.
+      # allow-all rule that --yolo adds at the default tier. Priority 400 is
+      # 4.4 (user tier 4 + 400/1000), the value tools.exclude gave its deny
+      # rules, so the tools stay blocked exactly as before; any user-tier value
+      # beats --yolo's 1.999. The file is written outside the checkout, so the
+      # pull request under review can't change it.
       - name: Write Gemini CLI tool policy
         run: |-
           cat > "${RUNNER_TEMP}/gemini-review-policy.toml" <<'GEMINI_POLICY_EOF'
