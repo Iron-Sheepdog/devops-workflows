@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.5](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.4...v2.2.5) (2026-11-18)
+
+
+### Continuous Integration
+
+* **release-please:** use ISD CI App token ([#47](https://github.com/Iron-Sheepdog/devops-workflows/issues/47)) ([e8e3ad3](https://github.com/Iron-Sheepdog/devops-workflows/commit/e8e3ad3c4d59b63d74f487914c7d8f67f222fea5))
+
 ## [2.2.4](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.3...v2.2.4) (2026-11-09)
 
 
