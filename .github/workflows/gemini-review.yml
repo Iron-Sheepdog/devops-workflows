@@ -31,6 +31,13 @@ on:
         description: Enable Gemini CLI debug logging and stream responses to the job log. May expose sensitive content; use only for diagnosing issues.
         required: false
         default: false
+      gemini_cli_version:
+        type: string
+        description:
+          Gemini CLI version to install. Pinned because `latest` moved to 0.70.0 (2026-11-19), which bumped simple-git to v4; simple-git v4 rejects the `GIT_CONFIG_SYSTEM` variable the CLI sets
+          when cloning extensions, so installing the code-review extension fails. Raise once a fixed release ships.
+        required: false
+        default: '0.69.0'
       max_session_turns:
         type: number
         description:
@@ -431,6 +438,7 @@ jobs:
             "${{ inputs.gcp_workload_identity_provider || vars.VERTEX_WIF_PROVIDER || 'projects/1094991255833/locations/global/workloadIdentityPools/github-actions-shared/providers/github' }}"
           gcp_service_account: "${{ inputs.gcp_service_account || vars.VERTEX_REVIEW_SA || 'gemini-review@iron-sheepdog-dev.iam.gserviceaccount.com' }}"
           gemini_model: '${{ inputs.gemini_model }}'
+          gemini_cli_version: '${{ inputs.gemini_cli_version }}'
           gemini_debug: '${{ inputs.gemini_debug }}'
           upload_artifacts: '${{ inputs.upload_artifacts }}'
           workflow_name: gemini-review
