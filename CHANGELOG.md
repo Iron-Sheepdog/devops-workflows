@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.6](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.5...v2.2.6) (2026-11-23)
+
+
+### Continuous Integration
+
+* **gemini-review:** pin gemini cli to 0.69.0 ([#49](https://github.com/Iron-Sheepdog/devops-workflows/issues/49)) ([7b9006e](https://github.com/Iron-Sheepdog/devops-workflows/commit/7b9006e7fe0bda147f92a6f44fe0cb77e9fd57c9))
+
 ## [2.2.5](https://github.com/Iron-Sheepdog/devops-workflows/compare/v2.2.4...v2.2.5) (2026-11-18)
 
 
